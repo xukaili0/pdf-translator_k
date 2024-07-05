@@ -55,7 +55,7 @@ class TranslateApi:
     DPI = 200
     FONT_SIZE = 21
 
-    def __init__(self, model_root_dir: Path = Path("/resources/models/")):
+    def __init__(self, model_root_dir: Path = Path("../models/")):
         self.app = FastAPI()
         self.app.add_api_route(
             "/translate_pdf/",
@@ -127,14 +127,35 @@ class TranslateApi:
         output_dir: Path
             Path to the output directory
         """
+
         if isinstance(pdf_path_or_bytes, Path):
             pdf_images = convert_from_path(pdf_path_or_bytes, dpi=self.DPI)
         else:
             pdf_images = convert_from_bytes(pdf_path_or_bytes, dpi=self.DPI)
 
+        import pdfplumber
+
+        with pdfplumber.open(pdf_path_or_bytes) as pdf:
+            for i, page in enumerate(pdf.pages):
+                width = page.width
+                height = page.height
+                print(f"PDF Page {i + 1} dimensions: {width} x {height} points")
+
+        # 使用PIL的Image模块打开图像
+        # with Image.open(pdf_images) as img:
+            # 获取图像的宽度和高度，单位为像素
+            # width, height = img.size
+            
+            # # 打印图像尺寸
+            # print(f"Image size: {width} pixels x {height} pixels")
+
         pdf_files = []
         reached_references = False
         for i, image in tqdm(enumerate(pdf_images)):
+
+            width, height = image.size
+            print(f"Image size: {width} pixels x {height} pixels")
+
             output_path = output_dir / f"{i:03}.pdf"
             if not reached_references:
                 img, original_img, reached_references = self.__translate_one_page(
@@ -217,17 +238,23 @@ class TranslateApi:
             Translated image, original image,
             and whether the references section has been reached.
         """
+        print('image',image)
         img = np.array(image, dtype=np.uint8)
         original_img = copy.deepcopy(img)
         result = self.layout_model(cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
         for line in result:
+            print('line',line.type)
+            # plt.imshow(line.image)
+            # plt.axis('off')  # 关闭坐标轴
+            # plt.show()  # 显示图像
             if line.type in ["text", "list"]:
                 ocr_results = list(map(lambda x: x[0], self.ocr_model(line.image)[1]))
-
+                print('ocr',ocr_results)
                 if len(ocr_results) > 1:
                     text = " ".join(ocr_results)
                     text = re.sub(r"\n|\t|\[|\]|\/|\|", " ", text)
-                    translated_text = self.__translate(text)
+                    # translated_text = self.__translate(text)
+                    translated_text = self.__translate_llm(text)
 
                     # if almost all characters in translated text are not japanese characters, skip
                     if len(
@@ -313,6 +340,62 @@ class TranslateApi:
 
             translated_texts.append(res)
         return "".join(translated_texts)
+    
+    def __translate_llm(self, text: str) -> str:
+        from openai import OpenAI
+        client = OpenAI(
+            api_key = "f0cbdf6cc3bc6ed11100f087a327e3e1.TFeSjBzErpykvnFh",
+            base_url = "https://open.bigmodel.cn/api/paas/v4/"
+        )
+        model_name = "GLM-4-Air"
+
+        system_prompt = """
+        You are an advanced translation assistant, specialized in translating between various languages. Your task is to:
+
+        - Accurately detect the source language.
+        - Translate the content as precisely as possible.
+        - Preserve original formatting such as tables, spacing, punctuation, and special structures.
+
+        translate text to chinese
+
+        """
+        # Here are some examples to guide you:
+
+        # Example 1:
+        # Text: 'Hello, how are you?'
+        # Translation (to Spanish): Hola, ¿cómo estás?
+
+        # Example 2:
+        # Text: 'Je suis heureux.'
+        # Translation (to Japanese): 私は幸せです。
+
+        # Note: For text-like content, translate content accurately without adding or removing any punctuation or symbols.
+
+        # Example 3:
+        # Table: '[Name, Age] [John, 25] [Anna, 30]'
+        # Translation (to Chinese): [姓名, 年龄] [约翰, 25] [安娜, 30]
+
+        # Note: For table-like content, keep the format using square brackets with commas as separators. Return ONLY the translated content enclosed within brackets without any additional explanations. Specifically, when translating into Japanese, do not translate commas(,) into Japanese punctuation "、" or "、".
+
+        # Now, proceed with the translations, detecting the source language and translating to the specified target language.
+
+        # print('---',model_name,api_key,base_url)        
+
+        response = client.chat.completions.create(
+        model=model_name,
+        messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text},
+            ]
+        )
+        translation = response.choices[0].message.content
+        print('+++',text,'+++')
+        print('~~~',translation,'~~~')
+
+        return translation
+
+
+
 
     def __split_text(self, text: str, text_limit: int = 448) -> List[str]:
         """Split text into chunks of sentences within text_limit.
@@ -373,4 +456,11 @@ class TranslateApi:
 
 if __name__ == "__main__":
     translate_api = TranslateApi()
-    translate_api.run()
+    # translate_api.run()
+
+    # 定义输出目录
+    output_directory = Path('./out')
+
+    # 调用_translate_pdf函数，传入PDF文件路径
+    pdf_file_path = Path('ta3.pdf')
+    translate_api._translate_pdf(pdf_file_path, output_directory)
