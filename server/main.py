@@ -4,7 +4,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import List, Tuple, Union
-
+import os
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
@@ -17,10 +17,14 @@ from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, Field
 from tqdm import tqdm
 from transformers import MarianMTModel, MarianTokenizer
+# import os
+from textwrap import TextWrapper
+
+os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from utils import LayoutAnalyzer, OCRModel, fw_fill
+from utils import fw_fill   #LayoutAnalyzer OCRModel, 
 
 from ultralytics import YOLO
 import math
@@ -29,10 +33,65 @@ class InputPdf(BaseModel):
 
     input_pdf: UploadFile = Field(..., title="Input PDF file")
 import fitz  # PyMuPDF
-DPI = 400
-FONT_SIZE = 10
-font_name = 'HanSerif'
-font_file_path = "../models/SourceHanSerif-Light.otf"  # 或 .otf 文件
+
+# 设置当前文件所在目录作为工作目录，这样可以使用相对路径
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+DPI = 300
+FONT_SIZE = 8
+font_name = 'SerifCN'
+font_file_path = "./font/SourceHanSerifCN-Medium.otf"  # 或 .otf 文件
+
+font_bold_name = 'SerifCNbold'
+font_bold_file_path ="./font/SourceHanSerifCN-Bold.otf" # "./font/SourceHanSerifCN-Bold.otf"  # 或 .otf 文件
+
+from surya.ocr import run_ocr
+from surya.model.detection import segformer
+from surya.model.recognition.model import load_model
+from surya.model.recognition.processor import load_processor
+det_processor, det_model = segformer.load_processor(), segformer.load_model()
+rec_model, rec_processor = load_model(), load_processor()
+
+class CustomTextWrapper(TextWrapper):
+    def __init__(self, en_width=4.3, cn_width=7.9, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.en_width = en_width
+        self.cn_width = cn_width
+
+    def _measure(self, s):
+        """Calculate the total width of the string."""
+        return sum(self.cn_width if '\u4e00' <= char <= '\u9fff' else self.en_width for char in s)
+
+    def _split(self, text):
+        """Split text into individual characters."""
+        return list(text)
+
+    def wrap(self, text, width_rec):
+        lines = []
+        current_line = []
+        current_width = 0
+
+        for char in self._split(text):
+            if '\u4e00' <= char <= '\u9fff' or char in ['。', '，', '、', '%', '（', '）','：','；']:
+                char_width = self.cn_width
+
+            elif '\u0041' <= char <= '\u005A': # 大写字符
+                char_width = 5.8
+            else :
+                char_width = self.en_width
+
+            if current_width + char_width > width_rec:
+                lines.append(''.join(current_line))
+                current_line = [char]
+                current_width = char_width
+            else:
+                current_line.append(char)
+                current_width += char_width
+
+        if current_line:
+            lines.append(''.join(current_line))
+
+        return '\n'.join(lines)
+
 
 class TranslateApi:
     """Translator API class.
@@ -154,17 +213,19 @@ class TranslateApi:
             # print(f"Image size: {width} pixels x {height} pixels")
         pdfdoc = fitz.open(pdf_path_or_bytes)
 
-
+        # font_id = pdfdoc.embed_font(fitz.FONT_TYPE_OPENTYPE, font_file_path)
+        # pdfdoc.subset_fonts()
         # 使用 embed_font 方法加载字体
-        font = fitz.Font(fontname=font_name, fontfile=font_file_path)        
+        self.font = fitz.Font(fontname=font_name, fontfile=font_file_path)  
+        # subset_font = self.font.get_subset()      
         pdf_files = []
         reached_references = False
         for i, image in tqdm(enumerate(pdf_images)):
             pdf_page = pdfdoc[i]
-            width_img, height_img = image.size
-            self.img_pdf_scale = height_img / pdf_page.rect.height
+            self.width_img, self.height_img = image.size
+            self.img_pdf_scale = self.height_img / pdf_page.rect.height
 
-            print(f" page {i} scale {self.img_pdf_scale} Image: {width_img} pixels x {height_img} pixels   pdf height {pdf_page.rect.height}")
+            print(f" page {i} scale {self.img_pdf_scale} Image: {self.width_img} pixels x {self.height_img} pixels   pdf height {pdf_page.rect.height}")
             output_path = output_dir / f"{i:03}.pdf"
             if not reached_references:
                 img_np, original_img_np, reached_references = self.__translate_one_page(
@@ -188,7 +249,8 @@ class TranslateApi:
                 )
 
             pdf_files.append(str(output_path))
-        pdfdoc.save('out_pdf1.pdf')
+        pdfdoc.subset_fonts(fallback=True, verbose=False)
+        pdfdoc.ez_save('out soyar '+str(pdf_path_or_bytes), garbage=3, deflate=True, clean = True, deflate_fonts = True)
         self.__merge_pdfs(pdf_files)
 
     def __load_models(self, model_root_dir: Path, device: str = "cuda"):
@@ -203,7 +265,7 @@ class TranslateApi:
             Path to the directory containing the models.
         device: str
             Device to use for the layout model.
-            Defaults to "cuda".
+            Defaults to "cuda". 
         """
         self.font = ImageFont.truetype(
             str(model_root_dir / "SourceHanSerif-Light.otf"),
@@ -211,17 +273,17 @@ class TranslateApi:
         )
         self.device = device
 
-        self.layout_model = LayoutAnalyzer(
-            model_root_dir=model_root_dir / "unilm", device=self.device
-        )
-        self.ocr_model = OCRModel(
-            model_root_dir=model_root_dir / "paddle-ocr", device=self.device
-        )
+        # self.layout_model = LayoutAnalyzer(
+        #     model_root_dir=model_root_dir / "unilm", device=self.device
+        # )
+        # self.ocr_model = OCRModel(
+        #     model_root_dir=model_root_dir / "paddle-ocr", device=self.device
+        # )
 
-        self.translate_model = MarianMTModel.from_pretrained("staka/fugumt-en-ja").to(
-            self.device
-        )
-        self.translate_tokenizer = MarianTokenizer.from_pretrained("staka/fugumt-en-ja")
+        # self.translate_model = MarianMTModel.from_pretrained("staka/fugumt-en-ja").to(
+        #     self.device
+        # )
+        # self.translate_tokenizer = MarianTokenizer.from_pretrained("staka/fugumt-en-ja")
 
     def __translate_one_page(
         self,
@@ -276,8 +338,32 @@ class TranslateApi:
         img_np = np.array(image, dtype=np.uint8)
         original_img_np = copy.deepcopy(img_np)
         # result = self.layout_model(cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR))
-        results = yolomodel(source=img_np, save=False, show_labels=True, show_conf=True, show_boxes=True,agnostic_nms = True, )#iou = 0 ,   iou = 0.7
-        
+        imgsize = 35
+        results = yolomodel(source=img_np, save=False, show_labels=True, show_conf=True, show_boxes=True,agnostic_nms = True, iou = 0.3)#iou = 0 ,   iou = 0.7  ,,imgsz = imgsize*32
+
+        from paddleocr import PaddleOCR
+        ocr = PaddleOCR(use_angle_cls=True, lang="en",det_db_box_thresh	= 0.1,use_dilation = True, det_db_score_mode='slow',det_db_unclip_ratio=1.8 ,det_limit_side_len=1600
+                        # rec_model_dir='./rec_svtr_tiny_none_ctc_en_train',
+                        # --rec_char_dict_path=
+                        #rec_algorithm = rec_algorithm1,
+                        )  # need to run only once to download and load model into memory
+
+        for result in results:
+            boxes = result.boxes  # 包含边界框信息
+            for box in boxes:
+                xyxy = box.xyxy[0].tolist()  # 转换为列表，包含(x1, y1, x2, y2)坐标
+                classsify_name = yolomodel.names[int(box.cls.item())]  # 类别名称
+
+                pdf_pos = [(x / self.img_pdf_scale) for x in xyxy]
+                rect = fitz.Rect(pdf_pos[0], pdf_pos[1], pdf_pos[2], pdf_pos[3])            
+                if classsify_name in["Section-header","Text","List-item","Caption","Page-header"]:  #, 
+                    #############
+                    annot = pdf_page.add_redact_annot(rect)
+                    annot.set_colors(stroke=(1, 0, 0), fill=(0.97, 0.99, 0.95))  # 设置边框和填充颜色
+                    annot.update()  # 必须更新注释以应用更改
+                    pdf_page.apply_redactions()
+                    #############
+
         for result in results:
             boxes = result.boxes  # 包含边界框信息
             for box in boxes:
@@ -287,11 +373,6 @@ class TranslateApi:
                 classsify_name = yolomodel.names[int(cls)]  # 类别名称
                 label = yolomodel.names[int(box.cls[0])]
 
-                # 在图像上绘制边界框和标签
-                image_orig = results[0].orig_img  # 获取原始图像
-                cv2.rectangle(image_orig, (int(xyxy[0]), int(xyxy[1])), (int(xyxy[2]), int(xyxy[3])), color_map[classsify_name], 2)
-                cv2.putText(image_orig, classsify_name+ f" {conf:.2f}", (int(xyxy[0]), int(xyxy[1]) - 8), cv2.FONT_HERSHEY_SIMPLEX, fontScale = 1.0, color = color_map[classsify_name], thickness = 2)  # 绘制标签 
-                cv2.imwrite('./out/t1.png', image_orig) #[:, :, ::-1]
 ##########################  PDF   ########################
                  # 定义矩形区域
                 # # 在指定区域填充矩形
@@ -315,88 +396,71 @@ class TranslateApi:
                 pdf_pos = [(x / self.img_pdf_scale) for x in xyxy]
                 rect = fitz.Rect(pdf_pos[0], pdf_pos[1], pdf_pos[2], pdf_pos[3])            
 
-                if classsify_name in ["Section-header","Text"]:  #, 
+                if (classsify_name in ["Section-header","Text","List-item","Caption"]) or ((classsify_name in ["Page-header"]) and ((xyxy[3]-xyxy[1])/(xyxy[2]-xyxy[0])) < 5 ):  #, 
                     # # 绘制矩形
                     # pdf_page.draw_rect(rect, color=(1,0,0), width=1,fill=(0.4,0.2,0.3))  # 边框宽度为2
-                    # print(f"____ Class: {classsify_name}, Conf: {conf:.2f}, BBox: {xyxy} label {label}")        
-                    cropped_img = image.crop((math.floor(xyxy[0]), math.floor(xyxy[1]), math.ceil(xyxy[2]), math.ceil(xyxy[3])))
+                    # print(f"____ Class: {classsify_name}, Conf: {conf:.2f}, BBox: {xyxy} label {label}")   
+                    xy_ = 4    
+                    cropped_img = image.crop((math.floor(xyxy[0]-xy_), math.floor(xyxy[1]-xy_), math.ceil(xyxy[2]+xy_), math.ceil(xyxy[3]+xy_)))
 
-                    cropped_img_np = np.array(cropped_img, dtype=np.uint8)
-                    cv2.imwrite('Image1.png',cropped_img_np )
-                    # ocr_results = self.ocr_model(cropped_img_np)[0]
-                    ocr_results = list(map(lambda x: x[0], self.ocr_model(cropped_img_np)[1]))
-                    print('ocr_results ', ocr_results)
+                    # cropped_img_np = np.array(cropped_img, dtype=np.uint8)
+                    # cv2.imwrite(f'./out/Image_{classsify_name}_{conf:.2f}.png',cropped_img_np )
+
+                    ################# paddle ocr #####################
+                    # ocrrs = ocr.ocr(cropped_img_np,cls=False)[0]
+                    # ocr_results = [item[1][0] for item in ocrrs]
+
+                    ################# soyar  ocr #####################
+
+                    predictions = run_ocr([cropped_img], [['en']], det_model, det_processor, rec_model, rec_processor)
+                    ocr_results = [box.text for box in predictions[0].text_lines]
+
+                    ##################################################  
+
+                    text_join = " ".join(ocr_results)
+                    area_ch = ((pdf_pos[2]-pdf_pos[0])*(pdf_pos[3]-pdf_pos[1])) / len(text_join)
+                    # height_line = (xyxy[3]-xyxy[1])/len(ocr_results)
+                    print(f'\n~~~ ocr_num {len(ocr_results)} h {(xyxy[3]-xyxy[1]):.2f}')
+
+                    # 在图像上绘制边界框和标签
+                    image_orig = results[0].orig_img  # 获取原始图像
+                    
+                    cv2.rectangle(image_orig, (math.floor(xyxy[0]-xy_), math.floor(xyxy[1]-xy_)), (math.ceil(xyxy[2]+xy_), math.ceil(xyxy[3]+xy_)), color_map[classsify_name], 3)
+                    cv2.putText(image_orig, classsify_name+ f" {conf:.2f} {(pdf_pos[2]-pdf_pos[0]):.2f}", (int(xyxy[0]), int(xyxy[1]) - 8), cv2.FONT_HERSHEY_SIMPLEX, fontScale = 1.0, color = color_map[classsify_name], thickness = 2)  # 绘制标签 
+                    cv2.imwrite(f'./out yolo .png', image_orig) #[:, :, ::-1]  imgsize_test/{DPI}_{imgsize}_3.png
+                    #############
 
 
                     if len(ocr_results) >= 1:
                         text = " ".join(ocr_results)
-                        text = re.sub(r"\n|\t|\[|\]|\/|\|", " ", text)
+                        text = re.sub(r"\n|\/|\|", " ", text)
                         # translated_text = text
                         translated_text = self.__translate_llm(text)
                         # print('translated_text',translated_text)
 
-                        # # if almost all characters in translated text are not japanese characters, skip
-                        # # if len(
-                        # #     re.findall(
-                        # #         r"[^\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\u3400-\u4DBF]",
-                        # #         translated_text,
-                        # #     )
-                        # # ) > 0.8 * len(translated_text):
-                        # #     print("skipped")
-                        # #     continue
+                        wrapper = CustomTextWrapper()
+                        processed_text = wrapper.wrap(translated_text,(pdf_pos[2]-pdf_pos[0]))
 
-                        # # if text is too short, skip
-                        # # if len(translated_text) < 20:
-                        # #     print("skipped")
-                        # #     continue
+                        # processed_text = fw_fill(
+                        #     translated_text,
+                        #     width=int((pdf_pos[2] - pdf_pos[0]) / 3.5)    #4.5 3.7                            
+                        # )
+                        print('+++ processed_text\n',processed_text,'\n\n')
 
-                        processed_text = fw_fill(
-                            translated_text,
-                            width=int((pdf_pos[2] - pdf_pos[0]) / 5)
-                            
-                        )
-                        print('processed_text',pdf_pos[2] - pdf_pos[0],processed_text)
-                        #############
-                        annot = pdf_page.add_redact_annot(rect)
-                        annot.set_colors(stroke=(1, 0, 0), fill=(0.8, 0.9, 0.7))  # 设置边框和填充颜色
-                        annot.update()  # 必须更新注释以应用更改
-                        pdf_page.apply_redactions()
-                        #############
+                        if classsify_name in ["Section-header"]:
+                            pdf_page.insert_text((pdf_pos[0], pdf_pos[1]+0.88*FONT_SIZE), processed_text, fontsize=FONT_SIZE+1, color=[0, 0, 0] ,fontfile = font_bold_file_path, fontname= font_bold_name, lineheight = 1.7)    
+                        elif classsify_name in ["List-item"] and area_ch < 33.5:
 
-                        pdf_page.insert_text((pdf_pos[0], pdf_pos[1]+0.8*FONT_SIZE), processed_text, fontsize=FONT_SIZE,color=[0, 0, 0] ,fontfile = font_file_path, fontname=font_name)    #fontname=self.font, 
+                            processed_text = fw_fill(translated_text, width=int((pdf_pos[2] - pdf_pos[0]) / 3.4))
+
+                            pdf_page.insert_text((pdf_pos[0], pdf_pos[1]+0.88*FONT_SIZE), processed_text, fontsize=FONT_SIZE-1,color=[0, 0, 0] ,fontfile = font_file_path, fontname=font_name , lineheight = 1.2)    
+                        else:    
+                            pdf_page.insert_text((pdf_pos[0], pdf_pos[1]+0.88*FONT_SIZE), processed_text, fontsize=FONT_SIZE,color=[0, 0, 0] ,fontfile = font_file_path, fontname=font_name , lineheight = 1.6)    
+
                         # pdf_page.insert_textbox(rect = rect,buffer = translated_text,  fontsize=6,color=[0, 0, 1])    #fontname=self.font, 
-
-                        # new_block = Image.new(
-                        #     "RGB",
-                        #     (
-                        #         int(xyxy[2]) - int(xyxy[0]),
-                        #         int(xyxy[3]) - int(xyxy[1]),
-                        #     ),
-                        #     color=(25, 255, 25),
-                        # )
-                        # new_block1 = np.array(new_block)
-                        # ImageDraw.Draw(new_block).text(
-                        #     (0, 0),
-                        #     text=processed_text,
-                        #     font=self.font,
-                        #     fill=(0, 0, 0),
-                        # )
-                        # new_block = np.array(new_block)
-                        # # cv2.imwrite('newblock1.png',new_block1 )
-                        # # cv2.imwrite('newblock.png',new_block )
-
-                        # img_np[
-                        #     int(xyxy[1]) : int(xyxy[3]),
-                        #     int(xyxy[0]) : int(xyxy[2]),
-                        # ] = new_block
                     elif len(ocr_results) == 0:
                         self.empity_ocr_result += 1
                         print("+++++++++ empity ",self.empity_ocr_result)
-                elif classsify_name in ["List-item"]:
-                    annot = pdf_page.add_redact_annot(rect)
-                    annot.set_colors(stroke=(1, 0, 0), fill=(1, 0, 0))  # 设置边框和填充颜色
-                    annot.update()  # 必须更新注释以应用更改
-                    pdf_page.apply_redactions()
                 # elif line.type == "title":
                 #     try:
                 #         title = self.ocr_model(line.image)[1][0][0]
@@ -408,21 +472,6 @@ class TranslateApi:
         return img_np, original_img_np, reached_references
 
     def __translate(self, text: str) -> str:
-        """Translate text using the translation model.
-
-        If the text is too long, it will be splited with
-        the heuristic that each sentence should be within 448 characters.
-
-        Parameters
-        ----------
-        text: str
-            Text to be translated.
-
-        Returns
-        -------
-        str
-            Translated text.
-        """
         texts = self.__split_text(text, 448)
 
         translated_texts = []
@@ -451,32 +500,12 @@ class TranslateApi:
         system_prompt = """
         You are an advanced chinese translation assistant,  Your task is to:
 
-        - Accurately detect the source language.
         - Translate the content as precisely as possible.
-        - Preserve original formatting such as tables, spacing, punctuation, and special structures.
-
-        Please translate the following text into Chinese, do not output any unrelated content 
+        - Preserve original formatting such as tables, spacing, punctuation, numbers.
+        - If content is like reference, please translate title only
+        Please translate the following text into Chinese, do not output any unrelated infomation such as tips and warnings if text is numbers,do not translate that
 
         """
-        # Here are some examples to guide you:
-
-        # Example 1:
-        # Text: 'Hello, how are you?'
-        # Translation (to Spanish): Hola, ¿cómo estás?
-
-        # Example 2:
-        # Text: 'Je suis heureux.'
-        # Translation (to Japanese): 私は幸せです。
-
-        # Note: For text-like content, translate content accurately without adding or removing any punctuation or symbols.
-
-        # Example 3:
-        # Table: '[Name, Age] [John, 25] [Anna, 30]'
-        # Translation (to Chinese): [姓名, 年龄] [约翰, 25] [安娜, 30]
-
-        # Note: For table-like content, keep the format using square brackets with commas as separators. Return ONLY the translated content enclosed within brackets without any additional explanations. Specifically, when translating into Japanese, do not translate commas(,) into Japanese punctuation "、" or "、".
-
-        # Now, proceed with the translations, detecting the source language and translating to the specified target language.
 
         # print('---',model_name,api_key,base_url)        
 
@@ -553,6 +582,7 @@ class TranslateApi:
         pdf_merger.write(self.temp_dir_name / "translated.pdf")
 
 
+
 if __name__ == "__main__":
     translate_api = TranslateApi()
     # translate_api.run()
@@ -561,5 +591,6 @@ if __name__ == "__main__":
     output_directory = Path('./out')
 
     # 调用_translate_pdf函数，传入PDF文件路径
-    pdf_file_path = Path('ta3.pdf')
+    pdf_file_path = Path('tb4.pdf')
+    print(pdf_file_path)
     translate_api._translate_pdf(pdf_file_path, output_directory)
