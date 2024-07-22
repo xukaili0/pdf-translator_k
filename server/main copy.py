@@ -38,27 +38,19 @@ import fitz  # PyMuPDF
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 DPI = 300
 FONT_SIZE = 8
-
 # font_name = 'SerifCN'
-# font_file_path = "./font/SourceHanSerifCN-Medium.ttf" 
-
-# font_bold_name = 'SerifCNbold'
-# font_bold_file_path ="./font/SourceHanSerifCN-Bold.ttf" 
-
-font_name = 'Simibold'
-font_file_path = "./font/SourceHanSerifCN-SemiBold.ttf" 
+# font_file_path = "./font/SourceHanSerifCN-Medium.otf"  # 或 .otf 文件
+font_file_path = "./font/SourceHanSerifCN-Medium.ttf" 
+font_name = 'SerifCN'
 
 font_bold_name = 'SerifCNbold'
-font_bold_file_path ="./font/SourceHanSerifCN-Bold.ttf" 
-
-# font_bold_name = 'Heavy'
-# font_bold_file_path ="./font/SourceHanSerifCN-Heavy.ttf" 
+font_bold_file_path ="./font/SourceHanSerifCN-Bold.ttf" # "./font/SourceHanSerifCN-Bold.otf"  # 或 .otf 文件
 
 from surya.ocr import run_ocr
-from surya.model.detection import model
+from surya.model.detection import segformer
 from surya.model.recognition.model import load_model
 from surya.model.recognition.processor import load_processor
-det_processor, det_model = model.load_processor(), model.load_model()
+det_processor, det_model = segformer.load_processor(), segformer.load_model()
 rec_model, rec_processor = load_model(), load_processor()
 
 class CustomTextWrapper(TextWrapper):
@@ -185,6 +177,13 @@ class TranslateApi:
         pdf_path = output_dir + pdf_name + '.pdf'
         pdf_images = convert_from_path(pdf_path, dpi=self.DPI)
 
+        # import pdfplumber
+        # with pdfplumber.open(pdf_path_or_bytes) as pdf:
+        #     for i, page in enumerate(pdf.pages):
+        #         width = page.width
+        #         height = page.height
+        #         print(f"PDF Page {i + 1} dimensions: {page.width} x {page.height} points")
+
         pdfdoc = fitz.open(pdf_path)
         self.font = fitz.Font(fontname=font_name, fontfile=font_file_path)  
         # subset_font = self.font.get_subset()      
@@ -210,12 +209,22 @@ class TranslateApi:
                 No = i,
                 pdfname = pdf_name
             )
+                # fig, ax = plt.subplots(1, 2, figsize=(20, 14))
+                # ax[0].imshow(original_img_np)
+                # ax[1].imshow(img_np)
+                # ax[0].axis("off")
+                # ax[1].axis("off")
+                # plt.tight_layout()
+                # plt.savefig(output_path, format="pdf", dpi=self.DPI)
+                # plt.close(fig)
+
+            pdf_files.append(str(output_path))
 
         # if not os.path.exists(output_dir + 'out'):
         #     os.makedirs(output_dir + 'out')
 
-        pdfdoc.subset_fonts(fallback=True, verbose=False)
-        pdfdoc.save(output_dir + 'out_' + pdf_name + '.pdf', garbage=3, deflate=True, clean = True, deflate_fonts = True) 
+        # pdfdoc.subset_fonts(fallback=True, verbose=False)
+        pdfdoc.ez_save(output_dir + 'out_' + pdf_name + '.pdf', garbage=3, deflate=True, clean = True, deflate_fonts = True) 
         print(f' ************  {pdf_path}  total tokens  {self.total_tokens} **************')
         # self.__merge_pdfs(pdf_files)
 
@@ -245,6 +254,26 @@ class TranslateApi:
         No,      # 当前的序号,
         pdfname
     ) -> Tuple[np.ndarray, np.ndarray, bool]:
+        """Translate one page of the PDF file.
+
+        There are some heuristics to clean-up the results of translation:
+            1. Remove newlines, tabs, brackets, slashes, and pipes
+            2. Reject the result if there are few Japanese characters
+            3. Skip the translation if the text block has only one line
+
+        Parameters
+        ----------
+        image: Image.Image
+            Image of the page
+        reached_references: bool
+            Whether the references section has been reached.
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray, bool]
+            Translated image, original image,
+            and whether the references section has been reached.
+        """
         color_map = {
             "Caption": (191, 100, 21),
             "Footnote": (2, 62, 115),
@@ -272,12 +301,12 @@ class TranslateApi:
         imgsize = 35
         results = yolomodel(source=img_np, save=False, show_labels=True, show_conf=True, show_boxes=True,agnostic_nms = True, iou = 0.3)#iou = 0 ,   iou = 0.7  ,,imgsz = imgsize*32
 
-        # from paddleocr import PaddleOCR
-        # ocr = PaddleOCR(use_angle_cls=True, lang="en",det_db_box_thresh	= 0.1,use_dilation = True, det_db_score_mode='slow',det_db_unclip_ratio=1.8 ,det_limit_side_len=1600
+        from paddleocr import PaddleOCR
+        ocr = PaddleOCR(use_angle_cls=True, lang="en",det_db_box_thresh	= 0.1,use_dilation = True, det_db_score_mode='slow',det_db_unclip_ratio=1.8 ,det_limit_side_len=1600
                         # rec_model_dir='./rec_svtr_tiny_none_ctc_en_train',
                         # --rec_char_dict_path=
                         #rec_algorithm = rec_algorithm1,
-                        # )  # need to run only once to download and load model into memory
+                        )  # need to run only once to download and load model into memory
 
         for result in results:
             boxes = result.boxes  # 包含边界框信息
@@ -303,6 +332,26 @@ class TranslateApi:
                 cls = box.cls.item()  # 类别ID
                 classsify_name = yolomodel.names[int(cls)]  # 类别名称
                 label = yolomodel.names[int(box.cls[0])]
+
+##########################  PDF   ########################
+                 # 定义矩形区域
+                # # 在指定区域填充矩形
+                # pdf_page.insert_shape(rect, fill={255,255,255}, even_odd=False)
+
+                # # 定义矩形的坐标（左下角的x和y，宽度，高度）
+                # rect_coordinates = (pdf_pos[0], pdf_pos[1], pdf_pos[2], pdf_pos[3])  # 左下角的x, 左下角的y, 宽度, 高度
+
+                # # 创建一个Shape对象，用于绘制
+                # shape = pdf_page.new_shape()
+
+                # # 设置填充颜色，例如红色
+                # shape.set_fill((1, 0, 0))  # RGB颜色，红色
+
+                # # 绘制矩形并填充
+                # shape.rect(*rect_coordinates)  # *操作符用于解包坐标元组
+                # shape.finish(fill=True)  # 填充矩形
+                # # 将绘制的内容添加到页面
+                # pdf_page.draw_shape(shape)
 
                 pdf_pos = [(x / self.img_pdf_scale) for x in xyxy]
                 rect = fitz.Rect(pdf_pos[0], pdf_pos[1], pdf_pos[2], pdf_pos[3])            
@@ -348,11 +397,9 @@ class TranslateApi:
                     if len(ocr_results) >= 1:
                         text = " ".join(ocr_results)
                         text = re.sub(r"\n|\/|\|", " ", text)
-                        # translated_text = text
-                        print('\n--- ',text)
-
+                        translated_text = text
                         translated_text , self.usage_tokens = self.__translate_llm(text)
-                        print('+++ ',translated_text)
+                        # print('translated_text',translated_text)
 
                         wrapper = CustomTextWrapper()
                         processed_text = wrapper.wrap(translated_text,(pdf_pos[2]-pdf_pos[0]))
@@ -361,8 +408,8 @@ class TranslateApi:
                         #     translated_text,
                         #     width=int((pdf_pos[2] - pdf_pos[0]) / 3.5)    #4.5 3.7                            
                         # )
-                        # print('+++ processed_text\n',processed_text)
-                        print(f'\n___ completion {self.usage_tokens.completion_tokens} prompt {self.usage_tokens.prompt_tokens} total {self.usage_tokens.total_tokens} \n\n\n')
+                        print('+++ processed_text\n',processed_text)
+                        print(f'___ completion {self.usage_tokens.completion_tokens} prompt {self.usage_tokens.prompt_tokens} total {self.usage_tokens.total_tokens} \n\n\n')
                         self.total_tokens = self.total_tokens + self.usage_tokens.total_tokens
 
                         if classsify_name in ["Section-header"]:
@@ -428,7 +475,8 @@ class TranslateApi:
         # model_name = "second-state/Gemma-2-9B-Chinese-Chat-GGUF"
 
         system_prompt = """
-    You are an advanced english to chinese translation assistant,  Your task is to translate the following text or word into Chinese precisely, preserve original markdown formatting such as people name,  item numbers, maths, latex and punctuation. Please translate the following text or word and do not output tips and warnings. 
+        You are an advanced chinese translation assistant,  Your task is to preserve original formatting such as numbers, tables, punctuation Please translate the following text into Chinese as precisely as possible, do not output tips and warnings 
+
         """
 
         # print('---',model_name,api_key,base_url)        
@@ -442,7 +490,7 @@ class TranslateApi:
         )
         translation = response.choices[0].message.content
         usage_tokens = response.usage 
-        # print('+++',text,'+++')
+        print('+++',text,'+++')
         # print('~~~',translation,'~~~')
 
         return translation, usage_tokens
