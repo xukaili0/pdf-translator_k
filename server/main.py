@@ -19,6 +19,7 @@ from tqdm import tqdm
 from transformers import MarianMTModel, MarianTokenizer
 # import os
 from textwrap import TextWrapper
+from datetime import datetime, timedelta
 
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 
@@ -27,8 +28,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from utils import fw_fill   #LayoutAnalyzer OCRModel, 
 
 from ultralytics import YOLO
-import math
-
+import math, logging, time
 import fitz  # PyMuPDF
 
 # 设置当前文件所在目录作为工作目录，这样可以使用相对路径
@@ -117,11 +117,12 @@ class TranslateApi:
     def _translate_pdf(
         self, pdf_name, data_dir, output_dir ,all_pages=False, specific_pages_list_1 = None
     ) -> None:
+        start_time = time.time()
         pdf_path = data_dir + pdf_name + '.pdf'
         pdf_images = convert_from_path(pdf_path, dpi=self.DPI)
 
-        pdfdoc = fitz.open(pdf_path)
-        pdfdoc_copy = fitz.open(pdf_path)
+        pdfdoc = fitz.open(pdf_path)    #用来写入中文的pdf
+        pdfdoc_copy = fitz.open(pdf_path)   #提取英文的原版pdf
         self.font = fitz.Font(fontname=font_name, fontfile=font_file_path)  
         # subset_font = self.font.get_subset()      
         print('pdf_===',len(pdfdoc), len(pdf_images))
@@ -151,8 +152,37 @@ class TranslateApi:
         #     os.makedirs(output_dir + 'out')
 
         pdfdoc.subset_fonts(fallback=True, verbose=False)
-        pdfdoc.save(output_dir + 'out_' + pdf_name + '.pdf', garbage=3, deflate=True, clean = True, deflate_fonts = True) 
-        print(f' ************  {pdf_path}  total tokens  {self.total_tokens} ****** {self.insertbox_count} ********')
+        pdfdoc.save(output_dir + f'/A_{str(self.model_select)}_' + pdf_name + '.pdf', garbage=3, deflate=True, clean = True, deflate_fonts = True) 
+        pdfdoc.close()    #用来写入中文的pdf
+
+        pdfdoc1 = fitz.open(output_dir + f'/A_{str(self.model_select)}_' + pdf_name + '.pdf')    #先将中文保存好，再打开
+        if all_pages == True:                
+            self.interleave_pdfs(pdfdoc_copy, pdfdoc1, output_dir + f'/B_{str(self.model_select)}_' + pdf_name + '.pdf')
+
+        time_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        total_time = time.time() - start_time
+        formatted_time = str(timedelta(seconds=total_time))
+        print_str = f"\n{time_now}  {pdf_name}\n        {self.insertbox_count}   {self.model_select}   {self.total_tokens}   {formatted_time} \n"
+
+        print(print_str)
+        with open(data_dir + "pdf_info.log", "a", encoding="utf-8") as log_file:
+            log_file.write(print_str)    # f"{formatted_date}: \n
+
+    def interleave_pdfs(self, doc1, doc2, output_path):
+
+        merged_doc = fitz.open()
+
+        for i in range(0, len(doc1)):
+            merged_doc.insert_pdf(doc1, from_page=i, to_page=i)
+            merged_doc.insert_pdf(doc2, from_page=i, to_page=(i))
+
+        merged_doc.subset_fonts(fallback=True, verbose=False)
+        merged_doc.save(output_path, garbage=3, deflate=True, clean = True, deflate_fonts = True)
+
+        # 关闭文档
+        doc1.close()
+        doc2.close()
+        merged_doc.close()
 
     def get_text_info(self, pdf_page2,rect):
 
@@ -165,29 +195,48 @@ class TranslateApi:
         blocks2 = pdf_page2.get_text("dict", clip = rect)
         # print(blocks2)
         # print(blocks['blocks']) #[0]['lines']
-        fontsize_ = []
         textjoin = []
+        fontsize_counts = {}
         fontbold_ = fonttype_all = 0
+        max_font = max_count = 0
+        
         for block in blocks2['blocks']:  # this is a text block
             # print('+++++++++++',block)
             for l in block['lines']:  # iterate through the text lines
                 for s in l["spans"]:  # iterate through the text spans 
-                    # print(s['size'], fitz.sRGB_to_rgb(s['color']), s['font'],f'_{s["text"]}_')  
-                    fontsize_.append(s['size'])
+                    font_size =  round(s['size'], 1)
+                    # print(font_size)
+
+                    if font_size in fontsize_counts:
+                        fontsize_counts[font_size] += len(s["text"])
+                    else:
+                        fontsize_counts[font_size] = len(s["text"])
                     
+
                     if 'bold' in s['font'].lower() or 'medi' in s['font'].lower():
                         fontbold_ = fontbold_+1
+                    
                     fonttype_all = fonttype_all + 1
-        # elif:
+                    # print(s['size'], fitz.sRGB_to_rgb(s['color']),  s['font'],f'_  {len(s["text"])}  {s["text"]}_')  
+
         if len(blocks_text)==0 and fonttype_all == 0:
             flag_null = True
             fonttype_all = 1 # 防止除0
-            fontsize_block = 1
+            max_font = 1
         else:
             flag_null = False
-            fontsize_block = max(set(fontsize_), key=fontsize_.count)
+            #######################  find max ########################
+            for font, count in fontsize_counts.items():
+                if count > max_count:
+                    max_font = font
+                    max_count = count
+            #######################  find max ########################
+            # fontsize_block = max(set(fontsize_), key=fontsize_.count)
+
+        # print(fontsize_counts)
+        # print(max_font, max_count)
                      
-        return flag_null, blocks_text, fontsize_block, fontbold_/fonttype_all
+        return flag_null, blocks_text, max_font, fontbold_/fonttype_all
     
     def translate_easyword(self, s):
         import string
@@ -273,7 +322,7 @@ class TranslateApi:
                 if classsify_name in["Section-header","Text","List-item","Caption","Page-header"]:  #, 
                     #############
                     annot = pdf_page.add_redact_annot(rect)
-                    annot.set_colors(stroke=(1, 0, 0), fill=(0.97, 0.99, 0.95))  # 设置边框和填充颜色
+                    annot.set_colors(stroke=(1, 0, 0), fill=(0.98, 0.99, 0.96))  # 设置边框和填充颜色
                     annot.update()  # 必须更新注释以应用更改
                     pdf_page.apply_redactions()
                     #############
@@ -310,10 +359,10 @@ class TranslateApi:
                     xy_ = 4                       
                     cv2.rectangle(image_orig, (math.floor(xyxy[0]-xy_), math.floor(xyxy[1]-xy_)), (math.ceil(xyxy[2]+xy_), math.ceil(xyxy[3]+xy_)), color_map[classsify_name], 3)
                     cv2.putText(image_orig, classsify_name+ f" {conf:.2f} {(pdf_pos[2]-pdf_pos[0]):.2f}", (int(xyxy[0]), int(xyxy[1]) - 8), cv2.FONT_HERSHEY_SIMPLEX, fontScale = 1.0, color = color_map[classsify_name], thickness = 2)  # 绘制标签 
-                    path_img = f'./out/layout/ollama_{pdfname}'
+                    path_img = f'./data1/layout/o_{pdfname}_'
                     if not os.path.exists(path_img):
                         os.makedirs(path_img)
-                    cv2.imwrite(f'{path_img}/{pdfname}_{No+1} .png', image_orig) 
+                    cv2.imwrite(f'{path_img}/{No+1} .png', image_orig) #{pdfname}
                     #############
 
 
@@ -336,7 +385,7 @@ class TranslateApi:
 
                         continue
 
-                    print('\n\n\n----------',text_block)
+                    print('\n\n----------',text_block)
 
                     test_easy, flag_easyword = self.translate_easyword(text_block)
                     # print(flag_easyword)
@@ -356,7 +405,6 @@ class TranslateApi:
                         # 使用第一个空格分割字符串
 
                             parts = text_block.split(" ", 1)
-                            print(parts)
                             if len(parts)>1: #类似于 2.3 apple ， 否则为纯数字 ，不进行翻译
 
                                 trans_part1 , self.usage_tokens = self.__translate_llm(parts[1])
@@ -366,6 +414,8 @@ class TranslateApi:
                             text_block , self.usage_tokens = self.__translate_llm(text_block)
                             self.total_tokens = self.total_tokens + self.usage_tokens.total_tokens
                     text_block = text_block.replace("\n", "   ")
+                    text_block = text_block.replace('<|im_end|>', '')  # gemma2 结尾有时会有
+                    text_block = text_block.replace('|im_end|>', '')  # gemma2 结尾有时会有
                     text_block = text_block.replace(' ', '\xa0')  # 注意'\xa0'是U+00A0的转义序列
 
                     # print('\n',,'\n',)
@@ -374,34 +424,15 @@ class TranslateApi:
                     if font_bold_ratio > 0.5:
                         insertbox_count = pdf_page.insert_textbox(rect = (pdf_pos[0]-3, pdf_pos[1]-3, pdf_pos[2]+3, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_bold_name,fontfile = font_bold_file_path ,fontsize = fontsize_block-0.4, color=[0, 0, 0], lineheight = 1.22)    
                     else:
-                        if fontsize_block > 20 or fontsize_block < 8.5:
-                            insertbox_count = pdf_page.insert_textbox(rect = (pdf_pos[0]-3, pdf_pos[1]-3, pdf_pos[2]+3, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_name,fontfile = font_file_path ,fontsize = fontsize_block-0.8, color=[0, 0, 0], lineheight = 1.15)    #fontname=self.font, 
+                        if fontsize_block > 20 or fontsize_block < 8:
+                            insertbox_count = pdf_page.insert_textbox(rect = (pdf_pos[0]-3, pdf_pos[1]-3, pdf_pos[2]+3, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_name,fontfile = font_file_path ,fontsize = fontsize_block-0.8, color=[0, 0, 0], lineheight = 1.12)    #fontname=self.font, 
                         else:    
-                            insertbox_count = pdf_page.insert_textbox(rect = (pdf_pos[0]-3, pdf_pos[1]-3, pdf_pos[2]+3, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_name,fontfile = font_file_path ,fontsize = fontsize_block-0.4, color=[0, 0, 0], lineheight = 1.26)    #fontname=self.font, 
+                            insertbox_count = pdf_page.insert_textbox(rect = (pdf_pos[0]-3, pdf_pos[1]-3, pdf_pos[2]+3, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_name,fontfile = font_file_path ,fontsize = fontsize_block-0.6, color=[0, 0, 0], lineheight = 1.23)    #fontname=self.font, 
                     if insertbox_count < 0:
                         self.insertbox_count += 1
 
-                    # print('^^^^^^^^^^^',insertbox_count)
-                    # self.insertbox_count = insertbox_count + self.insertbox_counts
-                    # pdf_page.insert_text((pdf_pos[0], pdf_pos[1]+0.88*FONT_SIZE), text_block, fontsize=FONT_SIZE-2,color=[0, 0, 0] ,fontfile = font_file_path, fontname=font_name , lineheight = 1.2)    
-
                     # page.insert_textbox(rect, modified_text, fontsize=font_size-4,fontname = 'simsunbold' , color = colr, fontfile = "../server/font/SourceHanSerifCN-SemiBold.ttf") 
 
-                    # self.total_tokens = 1
-                        # if classsify_name in ["Section-header"]:
-                        #     pdf_page.insert_text((pdf_pos[0], pdf_pos[1]+0.88*FONT_SIZE), processed_text, fontsize=FONT_SIZE+1, color=[0, 0, 0] ,fontfile = font_bold_file_path, fontname= font_bold_name, lineheight = 1.7)    
-                        # elif classsify_name in ["List-item"]: #and area_ch < 33.5:
-
-                        #     processed_text = fw_fill(translated_text, width=int((pdf_pos[2] - pdf_pos[0]) / 3))
-
-                        #     pdf_page.insert_text((pdf_pos[0], pdf_pos[1]+0.88*FONT_SIZE), processed_text, fontsize=FONT_SIZE-2,color=[0, 0, 0] ,fontfile = font_file_path, fontname=font_name , lineheight = 1.2)    
-                        # else:    
-                        #     pdf_page.insert_text((pdf_pos[0], pdf_pos[1]+0.88*FONT_SIZE), processed_text, fontsize=FONT_SIZE+2,color=[0, 0, 0] ,fontfile = font_file_path, fontname=font_name , lineheight = 2)    
-
-                    # elif len(ocr_results) == 0:
-                    #     self.empity_ocr_result += 1
-                    # print("+++++++++ empity ",self.empity_ocr_result)
-        # pdf_page
         return img_np
 
 
@@ -419,46 +450,57 @@ class TranslateApi:
         # )
         # model_name = "yi-medium"
 
-        client = OpenAI(
-            api_key = "ollama",
-            base_url = "http://localhost:11434/v1/"
-        )
-        ollama = 0
+        # client = OpenAI(
+        #     api_key = "ollama",
+        #     base_url = "http://localhost:11434/v1/"
+        # )
 
-        if ollama == 0:
-            model_name = "ali-qwen-8b:latest"
-        if ollama == 1:
-            model_name = "dol-qwen-8b:latest"
-        elif ollama == 2:
-            model_name = "secstate-gemma2:latest"
-        elif ollama == 3:
-            model_name = "hfl_llama3_chinese_ins_v3:latest"
+        # if self.model_select == 0:
+        #     model_name = "ali-qwen-8b:latest"
+        # if self.model_select == 1:
+        #     model_name = "dol-qwen-8b:latest"
+        # elif self.model_select == 2:
+        #     model_name = "secstate-gemma2:latest"
+        # elif self.model_select == 3:
+        #     model_name = "hfl_llama3_chinese_ins_v3:latest"
+        # elif self.model_select == 4:
+        #     model_name = "qwen2:7b" # 4bit
+        self.model_select = 5
 
         
-        # client = OpenAI(
-        #     api_key = "lm-studio",
-        #     base_url = "http://localhost:1234/v1/"
-        # )
-        # lmstudio = 3
-        # if lmstudio == 1:
-        #     model_name = "cognitivecomputations/dolphin-2.9.2-qwen2-7b-gguf"
-        # elif lmstudio == 2:
-        #     model_name = "second-state/Gemma-2-9B-Chinese-Chat-GGUF"
-        # elif lmstudio == 3:
-        #     model_name = "hfl_chinese_instruct_v3/Repository"
+        client = OpenAI(
+            api_key = "lm-studio",
+            base_url = "http://localhost:1234/v1/"
+        )
+        if self.model_select == 0:
+            model_name = "Qwen/Qwen2-7B-Instruct-GGUF"
+        elif self.model_select == 1:
+            model_name = "cognitivecomputations/dolphin-2.9.2-qwen2-7b-gguf"
+        elif self.model_select == 2:
+            model_name = "second-state/Gemma-2-9B-Chinese-Chat-GGUF"
+        elif self.model_select == 3:
+            model_name = "hfl_chinese_instruct_v3/llama-3-chinese-8b-instruct-v3-gguf"
+        elif self.model_select == 4:
+            model_name = "chatpdflocal/llama3.1-8b-gguf"
+        elif self.model_select == 5:
+            model_name = "hfl_chinese_instruct_v3_6b/llama-3-chinese-6b-instruct-v3-gguf"
+        
+# 你的任务是将下列文本或单词翻译成中文，对于人名、专有名词、数字、数学符号、和标点符号要保留原文中的格式不要翻译。对于下列英文文本中的数学公式、和数学符号，中文翻译结果保留原始英文中数学格式并且不要翻译为latex或者markdown数学格式。请翻译下面的文本或单词，直接显示输出翻译的结果。不要输出任何提示，注意，和警告信息。对于下列英文文本中除了英文字符之外的符号，翻译结果保留原样输出并且不要更改为latex或者markdown数学格式，翻译结果不要包含反斜杠\和$的latex数学公式 ，输出的翻译结果不要输出多余的解释，请直接根据输入文本输出翻译的结果，不要输出其他额外的解释，注解，提示，注意，和警告信息
 
         system_prompt = """
- 你是一位高级的英汉翻译助手，您的任务是精准地将下列文本或单词翻译成中文，对于人名、项目编号、数字、数学符号、和标点符号要保留原文中的格式不要翻译。请翻译下面的文本或单词，直接显示输出翻译的结果。不要输出任何提示，注意，和警告信息。
+请将英文翻译成中文，不要输出标记、注意、提示、警告等内容。保持英文原文中英文符号，希腊字母，数学符号和公式的格式保持原始不变，不要将数学符号和公式转换成 LaTeX $$ 和 \\ 公式形式。请直接将英文翻译成中文，只输出翻译结果，不要输出其他的标记、注意、提示、警告和解释。仅仅严格直接输出翻译后的中文结果，不要输出额外的解释补全和注意提示
     """
-    # You are an advanced english to chinese translation assistant,  Your task is to translate the following text or word into Chinese precisely. preserve original formatting and do not translate such as people name, item numbers, maths, latex and punctuation. Please translate the following text or word ,output translation directly and do not output attention tips and warnings.         
+# Translate into Chinese, don't output notation, attention, tips, warning. keeping the format of mathematical symbols and equations as they are in the original english text. don't convert mathematical symbols and equations into math Latex $$ formulas. Translate english into Chinese directly. only output english translation results, and don't output other notation, attention, tips, warning, interpret. output english translation results
 
 # 翻译结果保留原来排版格式，不要添加换行，空格等
+# Your task is to translate the following text or words into Chinese, keeping the format of proper names, specialized terms, numbers, mathematical symbols, and punctuation unchanged. For mathematical formulas and symbols in the following English text, the translation result should preserve the original English mathematical format without translating them into slash-wrapped LaTeX or Markdown mathematical formats. Please translate the text or words below and display the translation results directly. Do not output any prompts, notes, or warnings. For mathematical formulas or symbols in the following English text, the translation result should preserve the original English mathematical format and should not be translated into backslash-wrapped LaTeX or Markdown mathematical formats. Do not add backslashes.
         response = client.chat.completions.create(
         model=model_name,
         messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text},
-            ]
+            ],
+        stream = False
         )
         translation = response.choices[0].message.content
         usage_tokens = response.usage 
@@ -473,9 +515,19 @@ if __name__ == "__main__":
     # translate_api.run()
 
     # 定义输出目录
-    out_directory ='./out/ollama_aliqwen_cn_' #data/
-    data_directory ='./data/' #data/
+    out_name_prefix = 'o_dolqwen_cn_'
+    data_directory ='./data1/' #data/
+
+    out_directory = data_directory+ 'out_nv_cn_lm'
+    print(out_directory)
+    if not os.path.exists(out_directory):
+        os.makedirs(out_directory)
+
+    for filename in os.listdir(data_directory):
+        if filename.endswith('.pdf'):
+            # 提取PDF文件名
+            pdf_name = os.path.splitext(filename)[0]
+            print(f"PDF name:  {pdf_name}")
+            translate_api._translate_pdf(pdf_name, data_directory, out_directory,all_pages=1, specific_pages_list_1 = [1,2,3,4,5])            
 
     # 调用_translate_pdf函数，传入PDF文件路径
-    pdf_name = 'CMTFNet_CNN_and_Multiscale_Transformer_Fusion_Network_for_Remote-Sensing_Image_Semantic_Segmentation'
-    translate_api._translate_pdf(pdf_name, data_directory, out_directory,all_pages=0, specific_pages_list_1 = [2])
