@@ -30,7 +30,7 @@ from utils import fw_fill   #LayoutAnalyzer OCRModel,
 from ultralytics import YOLO
 import math, logging, time
 import fitz  # PyMuPDF
-
+import concurrent.futures
 # 设置当前文件所在目录作为工作目录，这样可以使用相对路径
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 DPI = 300
@@ -39,12 +39,21 @@ FONT_SIZE = 8
 # font_name = 'SerifCN'
 # font_file_path = "./font/SourceHanSerifCN-Medium.ttf" 
 
+# font_name = 'china-ss'
+# font_bold_name = 'china-ss'
 
 font_name = 'Simibold'
 font_file_path = "./font/SourceHanSerifCN-SemiBold.ttf" 
 
 font_bold_name = 'SerifCNbold'
 font_bold_file_path ="./font/SourceHanSerifCN-Bold.ttf" 
+
+model_paths = {
+    "YOLOv8x Model": "yolov8x-doclaynet-epoch64-imgsz640-initiallr1e-4-finallr1e-5.pt",
+    "YOLOv8x_full Model": "best.pt",
+}
+
+yolomodel = YOLO(model_paths["YOLOv8x Model"])
 
 # font_bold_name = 'Heavy'
 # font_bold_file_path ="./font/SourceHanSerifCN-Heavy.ttf" 
@@ -55,6 +64,24 @@ font_bold_file_path ="./font/SourceHanSerifCN-Bold.ttf"
 # from surya.model.recognition.processor import load_processor
 # det_processor, det_model = model.load_processor(), model.load_model()
 # rec_model, rec_processor = load_model(), load_processor()
+def convert_math_alpha_to_ascii(text):
+  """
+  将 Unicode 数学字母符号转换为对应的 ASCII 字母。
+  """
+  result = []
+  for char in text:
+    codepoint = ord(char)
+    # print(hex(ord(char)))
+    # print(ord(char))
+    if 0x1D434 <= codepoint <= 0x1D44D:
+      ascii_codepoint = codepoint - 0x1D3F3 
+      result.append(chr(ascii_codepoint))
+    elif 0x1D44E <= codepoint <= 0x1D467:
+        ascii_codepoint = codepoint - 0x1D3ED 
+        result.append(chr(ascii_codepoint))
+    else:
+      result.append(char)
+  return ''.join(result)
 
 class CustomTextWrapper(TextWrapper):
     def __init__(self, en_width=3.5, cn_width=7.9, *args, **kwargs):  # en_width=4, cn_width=7.9,
@@ -123,7 +150,7 @@ class TranslateApi:
 
         pdfdoc = fitz.open(pdf_path)    #用来写入中文的pdf
         pdfdoc_copy = fitz.open(pdf_path)   #提取英文的原版pdf
-        self.font = fitz.Font(fontname=font_name, fontfile=font_file_path)  
+        # self.font = fitz.Font(fontname=font_name, fontfile=font_file_path)  
         # subset_font = self.font.get_subset()      
         print('pdf_===',len(pdfdoc), len(pdf_images))
         if all_pages == True:
@@ -138,7 +165,6 @@ class TranslateApi:
             self.img_pdf_scale = self.height_img / pdf_page.rect.height
 
             print(f" page {i} scale {self.img_pdf_scale} Image: {self.width_img} pixels x {self.height_img} pixels   pdf height {pdf_page.rect.height}")
-            output_path = output_dir + f"{i:03}.pdf" 
 
             img_np = self.__translate_one_page(
                 image=image,
@@ -147,17 +173,20 @@ class TranslateApi:
                 pdfname = pdf_name,
                 pdf_page2 = pdfdoc_copy[i]
             )
-
+            # time.sleep(5)
         # if not os.path.exists(output_dir + 'out'):
         #     os.makedirs(output_dir + 'out')
 
+        output_path = output_dir + f'/A_{str(self.model_select)}_' + pdf_name + '.pdf' 
+
         pdfdoc.subset_fonts(fallback=True, verbose=False)
-        pdfdoc.save(output_dir + f'/A_{str(self.model_select)}_' + pdf_name + '.pdf', garbage=3, deflate=True, clean = True, deflate_fonts = True) 
+        pdfdoc.save(output_path, garbage=3, deflate=True, clean = True, deflate_fonts = True) 
         pdfdoc.close()    #用来写入中文的pdf
+        pdfdoc_copy.close()    
 
         pdfdoc1 = fitz.open(output_dir + f'/A_{str(self.model_select)}_' + pdf_name + '.pdf')    #先将中文保存好，再打开
         if all_pages == True:                
-            self.interleave_pdfs(pdfdoc_copy, pdfdoc1, output_dir + f'/B_{str(self.model_select)}_' + pdf_name + '.pdf')
+            self.mergepdf_pypdf2(pdf_path, output_path, output_dir + f'/B_{str(self.model_select)}_' + pdf_name + '.pdf')
 
         time_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         total_time = time.time() - start_time
@@ -168,6 +197,34 @@ class TranslateApi:
         with open(data_dir + "pdf_info.log", "a", encoding="utf-8") as log_file:
             log_file.write(print_str)    # f"{formatted_date}: \n
 
+    def mergepdf_pypdf2(self, pdf1_path, pdf2_path, output_path):
+        # 打开PDF文件
+        pdf_a = PyPDF2.PdfReader(open(pdf1_path, 'rb'))
+        pdf_b = PyPDF2.PdfReader(open(pdf2_path, 'rb'))
+
+        # 创建一个PDF writer对象
+        pdf_writer = PyPDF2.PdfWriter()
+
+        # 获取PDF文件的页数
+        num_pages_a = len(pdf_a.pages)
+        num_pages_b = len(pdf_b.pages)
+
+        # 确保两个PDF文件页数相同
+        assert num_pages_a == num_pages_b, "The PDF files must have the same number of pages."
+
+        # 交替插入页面
+        for i in range(num_pages_a):
+            pdf_writer.add_page(pdf_a.pages[i])
+            pdf_writer.add_page(pdf_b.pages[i])
+
+        # 写入新的PDF文件
+        with open(output_path, 'wb') as fh:
+            pdf_writer.write(fh)
+
+        print("PDF files merged successfully.")
+
+
+    ## 问题： 两个2m的文件，合成之后16m
     def interleave_pdfs(self, doc1, doc2, output_path):
 
         merged_doc = fitz.open()
@@ -251,6 +308,8 @@ class TranslateApi:
             "experiment": "实验",
             "case": "例子",
             "discussion": "讨论",
+            "result": "结果",
+            "results": "结果",
             "conclusion": "结论",
             "conclusions": "结论",
             "acknowledgment": "鸣谢",
@@ -290,11 +349,6 @@ class TranslateApi:
             "Text": (0, 153, 221),
             "Title": (196, 51, 2)
         }
-        model_paths = {
-            "YOLOv8x Model": "yolov8x-doclaynet-epoch64-imgsz640-initiallr1e-4-finallr1e-5.pt",
-            "YOLOv8x_full Model": "best.pt",
-        }
-        yolomodel = YOLO(model_paths["YOLOv8x Model"])
 
         img_np = np.array(image, dtype=np.uint8)
         # original_img_np = copy.deepcopy(img_np)
@@ -359,10 +413,10 @@ class TranslateApi:
                     xy_ = 4                       
                     cv2.rectangle(image_orig, (math.floor(xyxy[0]-xy_), math.floor(xyxy[1]-xy_)), (math.ceil(xyxy[2]+xy_), math.ceil(xyxy[3]+xy_)), color_map[classsify_name], 3)
                     cv2.putText(image_orig, classsify_name+ f" {conf:.2f} {(pdf_pos[2]-pdf_pos[0]):.2f}", (int(xyxy[0]), int(xyxy[1]) - 8), cv2.FONT_HERSHEY_SIMPLEX, fontScale = 1.0, color = color_map[classsify_name], thickness = 2)  # 绘制标签 
-                    path_img = f'./data1/layout/o_{pdfname}_'
+                    path_img = out_directory + f'\\layout\\{pdfname}' #f'./data1/layout/o_{pdfname}_'
                     if not os.path.exists(path_img):
                         os.makedirs(path_img)
-                    cv2.imwrite(f'{path_img}/{No+1} .png', image_orig) #{pdfname}
+                    cv2.imwrite(f'{path_img}\\{No+1} .png', image_orig) #{pdfname}
                     #############
 
 
@@ -391,6 +445,7 @@ class TranslateApi:
                     # print(flag_easyword)
                     if flag_easyword ==True:
                         text_block = test_easy
+                        print('flag_easyword', text_block)
                     else:
 
                         if text_block and text_block[0].isdigit():  #类似标题 2.4
@@ -398,8 +453,8 @@ class TranslateApi:
                             parts = text_block.split(" ", 1)
                             if len(parts)>1: #类似于 2.3 apple ， 否则为纯数字 ，不进行翻译
 
-                                trans_part1 , self.usage_tokens = self.__translate_llm(parts[1])
-                                self.total_tokens = self.total_tokens + self.usage_tokens.total_tokens
+                                trans_part1 , self.usage_tokens = self.translate_with_timeout(parts[1])
+                                self.total_tokens = self.total_tokens + self.usage_tokens
                                 text_block = parts[0] +'  '+ trans_part1
                         elif re.match(r'^\[(\d+)\]', text_block):  #类似reference [2] afd
                         # 使用第一个空格分割字符串
@@ -407,15 +462,17 @@ class TranslateApi:
                             parts = text_block.split(" ", 1)
                             if len(parts)>1: #类似于 2.3 apple ， 否则为纯数字 ，不进行翻译
 
-                                trans_part1 , self.usage_tokens = self.__translate_llm(parts[1])
-                                self.total_tokens = self.total_tokens + self.usage_tokens.total_tokens
+                                trans_part1 , self.usage_tokens = self.translate_with_timeout(parts[1])
+                                self.total_tokens = self.total_tokens + self.usage_tokens
                                 text_block = parts[0] +'  '+ trans_part1
                         else:
-                            text_block , self.usage_tokens = self.__translate_llm(text_block)
-                            self.total_tokens = self.total_tokens + self.usage_tokens.total_tokens
+                            text_block = convert_math_alpha_to_ascii(text_block)
+                            text_block , self.usage_tokens = self.translate_with_timeout(text_block)
+                            self.total_tokens = self.total_tokens + self.usage_tokens
                     text_block = text_block.replace("\n", "   ")
                     text_block = text_block.replace('<|im_end|>', '')  # gemma2 结尾有时会有
                     text_block = text_block.replace('|im_end|>', '')  # gemma2 结尾有时会有
+                    text_block = text_block.replace('<|eotid|>', '')  # gemma2 结尾有时会有
                     text_block = text_block.replace(' ', '\xa0')  # 注意'\xa0'是U+00A0的转义序列
 
                     # print('\n',,'\n',)
@@ -423,11 +480,14 @@ class TranslateApi:
                     print(f'########### fontsize {fontsize_block} {font_bold_ratio} \n{text_block}')
                     if font_bold_ratio > 0.5:
                         insertbox_count = pdf_page.insert_textbox(rect = (pdf_pos[0]-3, pdf_pos[1]-3, pdf_pos[2]+3, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_bold_name,fontfile = font_bold_file_path ,fontsize = fontsize_block-0.4, color=[0, 0, 0], lineheight = 1.22)    
+                        # insertbox_count = pdf_page.insert_textbox(rect = (pdf_pos[0]-3, pdf_pos[1]-3, pdf_pos[2]+3, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_bold_name, fontsize = fontsize_block-0.4, color=[0, 0, 0], lineheight = 1.22)    
                     else:
                         if fontsize_block > 20 or fontsize_block < 8:
+                            # insertbox_count = pdf_page.insert_textbox(rect = (pdf_pos[0]-3, pdf_pos[1]-3, pdf_pos[2]+3, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_name,fontsize = fontsize_block-0.8, color=[0, 0, 0], lineheight = 1.12)    #fontname=self.font, 
                             insertbox_count = pdf_page.insert_textbox(rect = (pdf_pos[0]-3, pdf_pos[1]-3, pdf_pos[2]+3, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_name,fontfile = font_file_path ,fontsize = fontsize_block-0.8, color=[0, 0, 0], lineheight = 1.12)    #fontname=self.font, 
                         else:    
                             insertbox_count = pdf_page.insert_textbox(rect = (pdf_pos[0]-3, pdf_pos[1]-3, pdf_pos[2]+3, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_name,fontfile = font_file_path ,fontsize = fontsize_block-0.6, color=[0, 0, 0], lineheight = 1.23)    #fontname=self.font, 
+                            # insertbox_count = pdf_page.insert_textbox(rect = (pdf_pos[0]-3, pdf_pos[1]-3, pdf_pos[2]+3, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_name, fontsize = fontsize_block-0.6, color=[0, 0, 0], lineheight = 1.23)    #fontname=self.font, 
                     if insertbox_count < 0:
                         self.insertbox_count += 1
 
@@ -436,8 +496,9 @@ class TranslateApi:
         return img_np
 
 
-    def __translate_llm(self, text: str) -> str:
+    def __translate_llm(self, text: str, temper, seed, top_p) -> str:
         from openai import OpenAI
+
         # client = OpenAI(
         #     api_key = "f0cbdf6cc3bc6ed11100f087a327e3e1.TFeSjBzErpykvnFh",
         #     base_url = "https://open.bigmodel.cn/api/paas/v4/"
@@ -465,8 +526,8 @@ class TranslateApi:
         #     model_name = "hfl_llama3_chinese_ins_v3:latest"
         # elif self.model_select == 4:
         #     model_name = "qwen2:7b" # 4bit
-        self.model_select = 5
 
+        self.model_select = 3
         
         client = OpenAI(
             api_key = "lm-studio",
@@ -483,12 +544,14 @@ class TranslateApi:
         elif self.model_select == 4:
             model_name = "chatpdflocal/llama3.1-8b-gguf"
         elif self.model_select == 5:
-            model_name = "hfl_chinese_instruct_v3_6b/llama-3-chinese-6b-instruct-v3-gguf"
-        
-# 你的任务是将下列文本或单词翻译成中文，对于人名、专有名词、数字、数学符号、和标点符号要保留原文中的格式不要翻译。对于下列英文文本中的数学公式、和数学符号，中文翻译结果保留原始英文中数学格式并且不要翻译为latex或者markdown数学格式。请翻译下面的文本或单词，直接显示输出翻译的结果。不要输出任何提示，注意，和警告信息。对于下列英文文本中除了英文字符之外的符号，翻译结果保留原样输出并且不要更改为latex或者markdown数学格式，翻译结果不要包含反斜杠\和$的latex数学公式 ，输出的翻译结果不要输出多余的解释，请直接根据输入文本输出翻译的结果，不要输出其他额外的解释，注解，提示，注意，和警告信息
+            model_name = "lmstudio-community/gemma2-2b-q8"
+        elif self.model_select == 6:
+            model_name = "lmstudio-community/gemma-2-9b-it-Q6_K"
+        # # 5 
+# 你的任务是将下列文本或单词翻译成中文，对于人名、专有名词、数字、数学符号、和标点符号要保留原文中的格式不要翻译。对于下列英文文本中的数学公式、和数学符号，中文翻译结果保留原始英文中数学格式并且不要翻译为latex或者markdown数学格式。请翻译下面的文本或单词，直接显示输出翻译的结果。不要输出任何提示，注意，和警告信息。对于下列英文文本中除了英文字符之外的符号，翻译结果保留原样输出并且不要更改为latex或者markdown数学格式，翻译结果不要包含反斜杠\和$的latex数学公式 ，输出的翻译结果不要输出多余的解释，请直接根据输入文本输出翻译的结果，不要输出其他额外的解释，注解，提示，注意，和警告信息  $$ 和 \\ 
 
         system_prompt = """
-请将英文翻译成中文，不要输出标记、注意、提示、警告等内容。保持英文原文中英文符号，希腊字母，数学符号和公式的格式保持原始不变，不要将数学符号和公式转换成 LaTeX $$ 和 \\ 公式形式。请直接将英文翻译成中文，只输出翻译结果，不要输出其他的标记、注意、提示、警告和解释。仅仅严格直接输出翻译后的中文结果，不要输出额外的解释补全和注意提示
+请将英文翻译成中文，保持英文原文中人名，专有名词，数学字符符号和公式的格式保持原始不变，不要将数学符号和公式转换成 LaTeX 公式形式。请直接将英文翻译成中文，只输出翻译结果，不要输出其他的注释note、注意Note、提示tips 和解释explanation，直接输出翻译后的中文结果。
     """
 # Translate into Chinese, don't output notation, attention, tips, warning. keeping the format of mathematical symbols and equations as they are in the original english text. don't convert mathematical symbols and equations into math Latex $$ formulas. Translate english into Chinese directly. only output english translation results, and don't output other notation, attention, tips, warning, interpret. output english translation results
 
@@ -500,15 +563,33 @@ class TranslateApi:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text},
             ],
-        stream = False
+        stream = False,
+        temperature = temper,
+        seed = seed,
+        top_p = top_p
         )
         translation = response.choices[0].message.content
         usage_tokens = response.usage 
         # print('+++',text,'+++')
         # print('~~~',translation,'~~~')
 
-        return translation, usage_tokens
- 
+        return translation, usage_tokens.total_tokens
+    
+    def translate_with_timeout(self, text, temper = 0.5, seed = 33, top_p = 0.95, timeout=30):
+        
+
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            try:
+                future = executor.submit(self.__translate_llm, text, temper, seed, top_p)
+                result  = future.result(timeout)
+                # print(result,'&&&&&&&&')
+                return result
+            except concurrent.futures.TimeoutError:
+                print("\n##################Translation timed out. Retrying...   " ,{temper},   {seed})
+                # 在这里可以重新尝试，或者根据需要处理超时
+                return f"# {text} #", 10
+#  self.translate_with_timeout(text, temper + 0.1, seed+10, timeout, )  # 递归调用自身以重新尝试
 
 if __name__ == "__main__":
     translate_api = TranslateApi()
@@ -516,9 +597,9 @@ if __name__ == "__main__":
 
     # 定义输出目录
     out_name_prefix = 'o_dolqwen_cn_'
-    data_directory ='./data1/' #data/
+    data_directory ='C:\\Users\\18420\\Desktop\\AIpaper\\0716\\' #data/  weekly_paper
 
-    out_directory = data_directory+ 'out_nv_cn_lm'
+    out_directory = data_directory+ 'out'
     print(out_directory)
     if not os.path.exists(out_directory):
         os.makedirs(out_directory)
@@ -528,6 +609,6 @@ if __name__ == "__main__":
             # 提取PDF文件名
             pdf_name = os.path.splitext(filename)[0]
             print(f"PDF name:  {pdf_name}")
-            translate_api._translate_pdf(pdf_name, data_directory, out_directory,all_pages=1, specific_pages_list_1 = [1,2,3,4,5])            
+            translate_api._translate_pdf(pdf_name, data_directory, out_directory,all_pages=1, specific_pages_list_1 = [5,6,7])            
 
     # 调用_translate_pdf函数，传入PDF文件路径
