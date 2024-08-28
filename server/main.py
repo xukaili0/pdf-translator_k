@@ -177,16 +177,16 @@ class TranslateApi:
         # if not os.path.exists(output_dir + 'out'):
         #     os.makedirs(output_dir + 'out')
 
-        output_path = output_dir + f'/A_{str(self.model_select)}_' + pdf_name + '.pdf' 
+        output_path = output_dir + f'\\{pdf_name[:40]}_A_{str(self.model_select)} .pdf'
 
         pdfdoc.subset_fonts(fallback=True, verbose=False)
-        pdfdoc.save(output_path, garbage=3, deflate=True, clean = True, deflate_fonts = True) 
+        pdfdoc.ez_save(output_path, expand = 255) # deflate=True, clean = True, deflate_images = True,  deflate_fonts = True, garbage=0,linear =True pretty = True
         pdfdoc.close()    #用来写入中文的pdf
         pdfdoc_copy.close()    
 
-        pdfdoc1 = fitz.open(output_dir + f'/A_{str(self.model_select)}_' + pdf_name + '.pdf')    #先将中文保存好，再打开
+        # pdfdoc1 = fitz.open(output_dir + f'/A_{str(self.model_select)}_' + pdf_name + '.pdf')    #先将中文保存好，再打开
         if all_pages == True:                
-            self.mergepdf_pypdf2(pdf_path, output_path, output_dir + f'/B_{str(self.model_select)}_' + pdf_name + '.pdf')
+            self.mergepdf_pypdf2(pdf_path, output_path, output_dir + f'\\{pdf_name[:40]}_B_{str(self.model_select)} .pdf')
 
         time_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         total_time = time.time() - start_time
@@ -527,7 +527,7 @@ class TranslateApi:
         # elif self.model_select == 4:
         #     model_name = "qwen2:7b" # 4bit
 
-        self.model_select = 3
+        self.model_select = 5
         
         client = OpenAI(
             api_key = "lm-studio",
@@ -597,7 +597,7 @@ if __name__ == "__main__":
 
     # 定义输出目录
     out_name_prefix = 'o_dolqwen_cn_'
-    data_directory ='C:\\Users\\18420\\Desktop\\AIpaper\\0716\\' #data/  weekly_paper
+    data_directory ='C:\\Users\\18420\\Desktop\\AIpaper\\translate\\' #data/  weekly_paper
 
     out_directory = data_directory+ 'out'
     print(out_directory)
@@ -609,6 +609,7 @@ if __name__ == "__main__":
             # 提取PDF文件名
             pdf_name = os.path.splitext(filename)[0]
             print(f"PDF name:  {pdf_name}")
-            translate_api._translate_pdf(pdf_name, data_directory, out_directory,all_pages=1, specific_pages_list_1 = [5,6,7])            
+            translate_api._translate_pdf(pdf_name, data_directory, out_directory,all_pages=1, specific_pages_list_1 = [4])            
 
     # 调用_translate_pdf函数，传入PDF文件路径
+    
