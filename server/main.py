@@ -247,9 +247,9 @@ class TranslateApi:
         blocks_text = blocks_text.replace("\n", " ")
         blocks_text = blocks_text.replace("- ", "")
         # blocks_text = blocks_text.replace(' ', '\xa0')  # 注意'\xa0'是U+00A0的转义序列
+        print('++++++++++', blocks_text)
 
-
-        blocks2 = pdf_page2.get_text("dict", clip = rect)
+        blocks2 = pdf_page2.get_text("dict", clip = rect, flags = 195)
         # print(blocks2)
         # print(blocks['blocks']) #[0]['lines']
         textjoin = []
@@ -258,7 +258,7 @@ class TranslateApi:
         max_font = max_count = 0
         
         for block in blocks2['blocks']:  # this is a text block
-            # print('+++++++++++',block)
+            # print('\n*************',block)
             for l in block['lines']:  # iterate through the text lines
                 for s in l["spans"]:  # iterate through the text spans 
                     font_size =  round(s['size'], 1)
@@ -378,7 +378,7 @@ class TranslateApi:
                     annot = pdf_page.add_redact_annot(rect)
                     annot.set_colors(stroke=(1, 0, 0), fill=(0.98, 0.99, 0.96))  # 设置边框和填充颜色
                     annot.update()  # 必须更新注释以应用更改
-                    pdf_page.apply_redactions()
+                    pdf_page.apply_redactions(graphics  = 3, text = 2)
                     #############
 
         for result in results:
@@ -408,6 +408,7 @@ class TranslateApi:
                     ##################################################  
                     # text_join = " ".join(ocr_results)
 
+                    pdf_pos = [(x / self.img_pdf_scale) for x in xyxy]
 
                     image_orig = results[0].orig_img  # 获取原始图像
                     xy_ = 4                       
@@ -431,7 +432,6 @@ class TranslateApi:
 
                         # print(f'\n___ completion {self.usage_tokens.completion_tokens} prompt {self.usage_tokens.prompt_tokens} total {self.usage_tokens.total_tokens} \n\n\n')
 
-                    pdf_pos = [(x / self.img_pdf_scale) for x in xyxy]
                     rect = fitz.Rect(pdf_pos[0], pdf_pos[1]+1, pdf_pos[2], pdf_pos[3]-1 )            
                     flag_null, text_block, fontsize_block, font_bold_ratio = self.get_text_info(pdf_page2,rect)
                     if flag_null == True: 
@@ -609,7 +609,7 @@ if __name__ == "__main__":
             # 提取PDF文件名
             pdf_name = os.path.splitext(filename)[0]
             print(f"PDF name:  {pdf_name}")
-            translate_api._translate_pdf(pdf_name, data_directory, out_directory,all_pages=1, specific_pages_list_1 = [4])            
+            translate_api._translate_pdf(pdf_name, data_directory, out_directory,all_pages=1, specific_pages_list_1 = [9])            
 
     # 调用_translate_pdf函数，传入PDF文件路径
     
