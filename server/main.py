@@ -164,7 +164,7 @@ class TranslateApi:
             self.width_img, self.height_img = image.size
             self.img_pdf_scale = self.height_img / pdf_page.rect.height
 
-            print(f" page {i} scale {self.img_pdf_scale} Image: {self.width_img} pixels x {self.height_img} pixels   pdf height {pdf_page.rect.height}")
+            print(f"###### page {i} scale {self.img_pdf_scale} Image: {self.width_img} pixels x {self.height_img} pixels   pdf height {pdf_page.rect.height}")
 
             img_np = self.__translate_one_page(
                 image=image,
@@ -276,7 +276,7 @@ class TranslateApi:
                     fonttype_all = fonttype_all + 1
                     # print(s['size'], fitz.sRGB_to_rgb(s['color']),  s['font'],f'_  {len(s["text"])}  {s["text"]}_')  
 
-        if len(blocks_text)==0 and fonttype_all == 0:
+        if len(blocks_text)==0 or fonttype_all == 0:
             flag_null = True
             fonttype_all = 1 # 防止除0
             max_font = 1
@@ -378,7 +378,7 @@ class TranslateApi:
                     annot = pdf_page.add_redact_annot(rect)
                     annot.set_colors(stroke=(1, 0, 0), fill=(0.98, 0.99, 0.96))  # 设置边框和填充颜色
                     annot.update()  # 必须更新注释以应用更改
-                    pdf_page.apply_redactions(graphics  = 3, text = 2)
+                    pdf_page.apply_redactions(images = fitz.PDF_REDACT_IMAGE_REMOVE_UNLESS_INVISIBLE ) #graphics  = 3, text = 2
                     #############
 
         for result in results:
@@ -439,7 +439,7 @@ class TranslateApi:
 
                         continue
 
-                    print('\n\n----------',text_block)
+                    # print('\n\n----------',text_block)
 
                     test_easy, flag_easyword = self.translate_easyword(text_block)
                     # print(flag_easyword)
@@ -450,12 +450,14 @@ class TranslateApi:
 
                         if text_block and text_block[0].isdigit():  #类似标题 2.4
                         # 使用第一个空格分割字符串
-                            parts = text_block.split(" ", 1)
+                            parts = text_block.split(" ", 1)    # parts 类似于 ['3.3.2', ' How can I ']
                             if len(parts)>1: #类似于 2.3 apple ， 否则为纯数字 ，不进行翻译
-
-                                trans_part1 , self.usage_tokens = self.translate_with_timeout(parts[1])
-                                self.total_tokens = self.total_tokens + self.usage_tokens
-                                text_block = parts[0] +'  '+ trans_part1
+                                if parts[1] == '':  # 类似于['3.3.2', '']
+                                    print('only numbers, part[1] no contents')
+                                else:
+                                    trans_part1 , self.usage_tokens = self.translate_with_timeout(parts[1])
+                                    self.total_tokens = self.total_tokens + self.usage_tokens
+                                    text_block = parts[0] +'  '+ trans_part1
                         elif re.match(r'^\[(\d+)\]', text_block):  #类似reference [2] afd
                         # 使用第一个空格分割字符串
 
@@ -477,7 +479,7 @@ class TranslateApi:
 
                     # print('\n',,'\n',)
                     
-                    print(f'########### fontsize {fontsize_block} {font_bold_ratio} \n{text_block}')
+                    print(f'******** fontsize {fontsize_block} {font_bold_ratio} \n{text_block}')
                     if font_bold_ratio > 0.5:
                         insertbox_count = pdf_page.insert_textbox(rect = (pdf_pos[0]-3, pdf_pos[1]-3, pdf_pos[2]+3, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_bold_name,fontfile = font_bold_file_path ,fontsize = fontsize_block-0.4, color=[0, 0, 0], lineheight = 1.22)    
                         # insertbox_count = pdf_page.insert_textbox(rect = (pdf_pos[0]-3, pdf_pos[1]-3, pdf_pos[2]+3, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_bold_name, fontsize = fontsize_block-0.4, color=[0, 0, 0], lineheight = 1.22)    
@@ -594,7 +596,6 @@ class TranslateApi:
 if __name__ == "__main__":
     translate_api = TranslateApi()
     # translate_api.run()
-
     # 定义输出目录
     out_name_prefix = 'o_dolqwen_cn_'
     data_directory ='C:\\Users\\18420\\Desktop\\AIpaper\\translate\\' #data/  weekly_paper
