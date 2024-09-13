@@ -4,7 +4,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import List, Tuple, Union
-import os
+import os, io
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
@@ -33,9 +33,7 @@ import fitz  # PyMuPDF
 import concurrent.futures
 # 设置当前文件所在目录作为工作目录，这样可以使用相对路径
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
-DPI = 300
-FONT_SIZE = 8
-
+DPI = 200
 # font_name = 'SerifCN'
 # font_file_path = "./font/SourceHanSerifCN-Medium.ttf" 
 
@@ -53,7 +51,7 @@ model_paths = {
     "YOLOv8x_full Model": "best.pt",
 }
 
-yolomodel = YOLO(model_paths["YOLOv8x Model"])
+yolomodel = YOLO(model_paths["YOLOv8x_full Model"])
 
 # font_bold_name = 'Heavy'
 # font_bold_file_path ="./font/SourceHanSerifCN-Heavy.ttf" 
@@ -83,21 +81,6 @@ def convert_math_alpha_to_ascii(text):
       result.append(char)
   return ''.join(result)
 
-class CustomTextWrapper(TextWrapper):
-    def __init__(self, en_width=3.5, cn_width=7.9, *args, **kwargs):  # en_width=4, cn_width=7.9,
-        super().__init__(*args, **kwargs)
-        self.en_width = en_width
-        self.cn_width = cn_width
-
-    def _measure(self, s):
-        """Calculate the total width of the string."""
-        return sum(self.cn_width if '\u4e00' <= char <= '\u9fff' else self.en_width for char in s)
-
-    def _split(self, text):
-        """Split text into individual characters."""
-        return list(text)
-
-
 class TranslateApi:
     
     def __init__(self, model_root_dir: Path = Path("../models/")):
@@ -114,7 +97,7 @@ class TranslateApi:
             methods=["GET"],
         )
         self.insertbox_count = 0
-
+        self.picture_figure = True  # 在有的pdf阅读器上，图片中的线条形状会错乱，所以直接保存为图片。
         self.DPI = DPI
         self.empity_ocr_result = 0
         self.usage_tokens = 0
@@ -147,11 +130,11 @@ class TranslateApi:
         start_time = time.time()
         pdf_path = data_dir + pdf_name + '.pdf'
         pdf_images = convert_from_path(pdf_path, dpi=self.DPI)
+        pdf_images_2_dpi = convert_from_path(pdf_path, dpi=2*self.DPI)
 
-        pdfdoc = fitz.open(pdf_path)    #用来写入中文的pdf
+        pdfdoc = fitz.open(pdf_path)        #用来写入中文的pdf
+        pdfdoc_fig = fitz.open(pdf_path)    #用来写入中文的pdf,含有图片的pdf
         pdfdoc_copy = fitz.open(pdf_path)   #提取英文的原版pdf
-        # self.font = fitz.Font(fontname=font_name, fontfile=font_file_path)  
-        # subset_font = self.font.get_subset()      
         print('pdf_===',len(pdfdoc), len(pdf_images))
         if all_pages == True:
             specific_pages_list = list(range(len(pdfdoc)))
@@ -160,6 +143,7 @@ class TranslateApi:
 
         for i in specific_pages_list:
             pdf_page = pdfdoc[i]
+            pdf_page_fig = pdfdoc_fig[i]
             image = pdf_images[i]
             self.width_img, self.height_img = image.size
             self.img_pdf_scale = self.height_img / pdf_page.rect.height
@@ -168,24 +152,27 @@ class TranslateApi:
 
             img_np = self.__translate_one_page(
                 image=image,
+                image_2_dpi = pdf_images_2_dpi[i],
                 pdf_page = pdf_page,
+                pdf_page_fig = pdf_page_fig,
                 No = i,
                 pdfname = pdf_name,
                 pdf_page2 = pdfdoc_copy[i]
             )
-            # time.sleep(5)
-        # if not os.path.exists(output_dir + 'out'):
-        #     os.makedirs(output_dir + 'out')
 
         output_path = output_dir + f'\\{pdf_name[:40]}_A_{str(self.model_select)} .pdf'
-
         pdfdoc.subset_fonts(fallback=True, verbose=False)
-        pdfdoc.ez_save(output_path, expand = 255) # deflate=True, clean = True, deflate_images = True,  deflate_fonts = True, garbage=0,linear =True pretty = True
+        pdfdoc.ez_save(output_path, expand = 255, deflate=True, clean = True, deflate_images = True,  deflate_fonts = True) # , garbage=0,linear =True pretty = True
         pdfdoc.close()    #用来写入中文的pdf
+       
+        output_path_fig = output_dir + f'\\{pdf_name[:40]}_C_{str(self.model_select)} .pdf'
+        pdfdoc_fig.subset_fonts(fallback=True, verbose=False)
+        pdfdoc_fig.ez_save(output_path_fig, expand = 255, deflate=True, clean = True, deflate_images = True,  deflate_fonts = True) # , garbage=0,linear =True pretty = True
+        pdfdoc_fig.close()    #用来写入中文的pdf
+       
         pdfdoc_copy.close()    
 
-        # pdfdoc1 = fitz.open(output_dir + f'/A_{str(self.model_select)}_' + pdf_name + '.pdf')    #先将中文保存好，再打开
-        if all_pages == True:                
+        if all_pages == True and False:                
             self.mergepdf_pypdf2(pdf_path, output_path, output_dir + f'\\{pdf_name[:40]}_B_{str(self.model_select)} .pdf')
 
         time_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -247,7 +234,7 @@ class TranslateApi:
         blocks_text = blocks_text.replace("\n", " ")
         blocks_text = blocks_text.replace("- ", "")
         # blocks_text = blocks_text.replace(' ', '\xa0')  # 注意'\xa0'是U+00A0的转义序列
-        print('++++++++++', blocks_text)
+        # print('++++++++++', blocks_text)
 
         blocks2 = pdf_page2.get_text("dict", clip = rect, flags = 195)
         # print(blocks2)
@@ -331,7 +318,9 @@ class TranslateApi:
     def __translate_one_page(
         self,
         image: Image.Image,
+        image_2_dpi,
         pdf_page,
+        pdf_page_fig,
         No,      # 当前的序号,
         pdfname,
         pdf_page2
@@ -353,7 +342,8 @@ class TranslateApi:
         img_np = np.array(image, dtype=np.uint8)
         # original_img_np = copy.deepcopy(img_np)
         # result = self.layout_model(cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR))
-        results = yolomodel(source=img_np, save=False, show_labels=True, show_conf=True, show_boxes=True,agnostic_nms = True, iou = 0.2)#iou = 0 ,   iou = 0.7  ,,imgsz = imgsize*32
+        imgsize = 35
+        results = yolomodel(source=img_np, save=False, show_labels=True, show_conf=True, show_boxes=True,agnostic_nms = True, iou = 0.2, imgsz = imgsize*32)#iou = 0 ,   iou = 0.7  ,,imgsz = imgsize*32
 
         # from paddleocr import PaddleOCR
         # ocr = PaddleOCR(use_angle_cls=True, lang="en",det_db_box_thresh	= 0.1,use_dilation = True, det_db_score_mode='slow',det_db_unclip_ratio=1.8 ,det_limit_side_len=1600
@@ -372,13 +362,32 @@ class TranslateApi:
                 classsify_name = yolomodel.names[int(box.cls.item())]  # 类别名称
 
                 pdf_pos = [(x / self.img_pdf_scale) for x in xyxy]
-                rect = fitz.Rect(pdf_pos[0], pdf_pos[1], pdf_pos[2], pdf_pos[3])   
+                rect = fitz.Rect(pdf_pos[0], pdf_pos[1], pdf_pos[2], pdf_pos[3])  
+
+                if self.picture_figure == True:
+                    if (classsify_name in ["Formula","Picture","Table"]):
+
+                        rect_p1 = fitz.Rect(pdf_pos[0]-0.5, pdf_pos[1]-0.5, pdf_pos[2]+0.5, pdf_pos[3]+0.5)  
+                        #############
+                        annot = pdf_page_fig.add_redact_annot(rect_p1)
+                        annot.set_colors(stroke=(1, 0, 0), fill=(0.88, 0.92, 0.81))  # 设置边框和填充颜色
+                        annot.update()  # 必须更新注释以应用更改
+                        pdf_page_fig.apply_redactions(images = fitz.PDF_REDACT_IMAGE_REMOVE_UNLESS_INVISIBLE ) #graphics  = 3, text = 2
+                        #############
+
                 if classsify_name in["Section-header","Text","List-item","Caption","Page-header"]:  #, 
                     #############
                     annot = pdf_page.add_redact_annot(rect)
                     annot.set_colors(stroke=(1, 0, 0), fill=(0.98, 0.99, 0.96))  # 设置边框和填充颜色
                     annot.update()  # 必须更新注释以应用更改
                     pdf_page.apply_redactions(images = fitz.PDF_REDACT_IMAGE_REMOVE_UNLESS_INVISIBLE ) #graphics  = 3, text = 2
+
+                    #############
+                    annot_fig = pdf_page_fig.add_redact_annot(rect)
+                    annot_fig.set_colors(stroke=(1, 0, 0), fill=(0.98, 0.99, 0.96))  # 设置边框和填充颜色
+                    annot_fig.update()  # 必须更新注释以应用更改
+                    pdf_page_fig.apply_redactions(images = fitz.PDF_REDACT_IMAGE_REMOVE_UNLESS_INVISIBLE ) #graphics  = 3, text = 2
+
                     #############
 
         for result in results:
@@ -390,8 +399,32 @@ class TranslateApi:
                 classsify_name = yolomodel.names[int(cls)]  # 类别名称
                 # label = yolomodel.names[int(box.cls[0])]
 
+                ##################################################  
+
+                pdf_pos = [(x / self.img_pdf_scale) for x in xyxy]
+
+                image_orig = results[0].orig_img  # 获取原始图像
+                xy_ = 4                       
+                cv2.rectangle(image_orig, (math.floor(xyxy[0]-xy_), math.floor(xyxy[1]-xy_)), (math.ceil(xyxy[2]+xy_), math.ceil(xyxy[3]+xy_)), color_map[classsify_name], 3)
+                cv2.putText(image_orig, classsify_name+ f" {conf:.2f} {(pdf_pos[2]-pdf_pos[0]):.2f}", (int(xyxy[0]), int(xyxy[1]) - 8), cv2.FONT_HERSHEY_SIMPLEX, fontScale = 1.0, color = color_map[classsify_name], thickness = 2)  # 绘制标签 
+                path_img = out_directory + f'\\layout\\{pdfname}' #f'./data1/layout/o_{pdfname}_'
+                if not os.path.exists(path_img):
+                    os.makedirs(path_img)
+                cv2.imwrite(f'{path_img}\\{No+1} .png', image_orig) #{pdfname}
+                #############
+
+                if self.picture_figure == True:
+                    if (classsify_name in ["Formula","Picture","Table"]):
+                        rect = fitz.Rect(pdf_pos[0], pdf_pos[1], pdf_pos[2], pdf_pos[3])  
+                        xy_ = 0                 
+                        cropped_img = image_2_dpi.crop(((2*xyxy[0]-xy_), (2*xyxy[1]-xy_), (2*xyxy[2]+xy_), (2*xyxy[3]+xy_)))
+                        # 将PIL图像转换为字节流
+                        img_byte_arr = io.BytesIO()
+                        cropped_img.save(img_byte_arr, format='PNG')
+                        img_byte_arr = img_byte_arr.getvalue()
+                        pdf_page_fig.insert_image(rect = rect, stream = img_byte_arr)
+                                       
                 if (classsify_name in ["Section-header","Text","List-item","Caption"]) or ((classsify_name in ["Page-header"]) and ((xyxy[3]-xyxy[1])/(xyxy[2]-xyxy[0])) < 5 ):  #, 
-                    # cropped_img = image.crop((math.floor(xyxy[0]-xy_), math.floor(xyxy[1]-xy_), math.ceil(xyxy[2]+xy_), math.ceil(xyxy[3]+xy_)))
 
                     # cropped_img_np = np.array(cropped_img, dtype=np.uint8)
                     # cv2.imwrite(f'./out/Image_{classsify_name}_{conf:.2f}.png',cropped_img_np )
@@ -405,31 +438,6 @@ class TranslateApi:
                     # predictions = run_ocr([cropped_img], [['en']], det_model, det_processor, rec_model, rec_processor)
                     # ocr_results = [box.text for box in predictions[0].text_lines]
 
-                    ##################################################  
-                    # text_join = " ".join(ocr_results)
-
-                    pdf_pos = [(x / self.img_pdf_scale) for x in xyxy]
-
-                    image_orig = results[0].orig_img  # 获取原始图像
-                    xy_ = 4                       
-                    cv2.rectangle(image_orig, (math.floor(xyxy[0]-xy_), math.floor(xyxy[1]-xy_)), (math.ceil(xyxy[2]+xy_), math.ceil(xyxy[3]+xy_)), color_map[classsify_name], 3)
-                    cv2.putText(image_orig, classsify_name+ f" {conf:.2f} {(pdf_pos[2]-pdf_pos[0]):.2f}", (int(xyxy[0]), int(xyxy[1]) - 8), cv2.FONT_HERSHEY_SIMPLEX, fontScale = 1.0, color = color_map[classsify_name], thickness = 2)  # 绘制标签 
-                    path_img = out_directory + f'\\layout\\{pdfname}' #f'./data1/layout/o_{pdfname}_'
-                    if not os.path.exists(path_img):
-                        os.makedirs(path_img)
-                    cv2.imwrite(f'{path_img}\\{No+1} .png', image_orig) #{pdfname}
-                    #############
-
-
-                    # if len(ocr_results) >= 1:
-                    #     text = " ".join(ocr_results)
-                    #     text = re.sub(r"\n|\/|\|", " ", text)
-                    #     # translated_text = text
-                    #     print('\n--- ',text)
-
-                    #     translated_text = text
-                        # print('+++ ',translated_text)
-
                         # print(f'\n___ completion {self.usage_tokens.completion_tokens} prompt {self.usage_tokens.prompt_tokens} total {self.usage_tokens.total_tokens} \n\n\n')
 
                     rect = fitz.Rect(pdf_pos[0], pdf_pos[1]+1, pdf_pos[2], pdf_pos[3]-1 )            
@@ -438,8 +446,6 @@ class TranslateApi:
                         print('\n$$$$$$$$$$$$ skip  ')
 
                         continue
-
-                    # print('\n\n----------',text_block)
 
                     test_easy, flag_easyword = self.translate_easyword(text_block)
                     # print(flag_easyword)
@@ -479,17 +485,21 @@ class TranslateApi:
 
                     # print('\n',,'\n',)
                     
-                    print(f'******** fontsize {fontsize_block} {font_bold_ratio} \n{text_block}')
+                    # print(f'******** fontsize {fontsize_block} {font_bold_ratio} \n{text_block}')
+                    margin_textbox = 2
                     if font_bold_ratio > 0.5:
-                        insertbox_count = pdf_page.insert_textbox(rect = (pdf_pos[0]-3, pdf_pos[1]-3, pdf_pos[2]+3, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_bold_name,fontfile = font_bold_file_path ,fontsize = fontsize_block-0.4, color=[0, 0, 0], lineheight = 1.22)    
-                        # insertbox_count = pdf_page.insert_textbox(rect = (pdf_pos[0]-3, pdf_pos[1]-3, pdf_pos[2]+3, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_bold_name, fontsize = fontsize_block-0.4, color=[0, 0, 0], lineheight = 1.22)    
+                        insertbox_count = pdf_page.insert_textbox(rect = (pdf_pos[0]-margin_textbox, pdf_pos[1]-margin_textbox, pdf_pos[2]+margin_textbox, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_bold_name,fontfile = font_bold_file_path ,fontsize = fontsize_block-0.4, color=[0, 0, 0], lineheight = 1.22)   
+
+                        insertbox_count = pdf_page_fig.insert_textbox(rect = (pdf_pos[0]-margin_textbox, pdf_pos[1]-margin_textbox, pdf_pos[2]+margin_textbox, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_bold_name,fontfile = font_bold_file_path ,fontsize = fontsize_block-0.4, color=[0, 0, 0], lineheight = 1.22)    
                     else:
                         if fontsize_block > 20 or fontsize_block < 8:
-                            # insertbox_count = pdf_page.insert_textbox(rect = (pdf_pos[0]-3, pdf_pos[1]-3, pdf_pos[2]+3, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_name,fontsize = fontsize_block-0.8, color=[0, 0, 0], lineheight = 1.12)    #fontname=self.font, 
-                            insertbox_count = pdf_page.insert_textbox(rect = (pdf_pos[0]-3, pdf_pos[1]-3, pdf_pos[2]+3, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_name,fontfile = font_file_path ,fontsize = fontsize_block-0.8, color=[0, 0, 0], lineheight = 1.12)    #fontname=self.font, 
+                            insertbox_count = pdf_page.insert_textbox(rect = (pdf_pos[0]-margin_textbox, pdf_pos[1]-margin_textbox, pdf_pos[2]+margin_textbox, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_name,fontfile = font_file_path ,fontsize = fontsize_block-0.8, color=[0, 0, 0], lineheight = 1.12)   
+
+                            insertbox_count = pdf_page_fig.insert_textbox(rect = (pdf_pos[0]-margin_textbox, pdf_pos[1]-margin_textbox, pdf_pos[2]+margin_textbox, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_name,fontfile = font_file_path ,fontsize = fontsize_block-0.8, color=[0, 0, 0], lineheight = 1.12)    
                         else:    
-                            insertbox_count = pdf_page.insert_textbox(rect = (pdf_pos[0]-3, pdf_pos[1]-3, pdf_pos[2]+3, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_name,fontfile = font_file_path ,fontsize = fontsize_block-0.6, color=[0, 0, 0], lineheight = 1.23)    #fontname=self.font, 
-                            # insertbox_count = pdf_page.insert_textbox(rect = (pdf_pos[0]-3, pdf_pos[1]-3, pdf_pos[2]+3, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_name, fontsize = fontsize_block-0.6, color=[0, 0, 0], lineheight = 1.23)    #fontname=self.font, 
+                            insertbox_count = pdf_page.insert_textbox(rect = (pdf_pos[0]-margin_textbox, pdf_pos[1]-margin_textbox, pdf_pos[2]+margin_textbox, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_name,fontfile = font_file_path ,fontsize = fontsize_block-0.6, color=[0, 0, 0], lineheight = 1.23) 
+                       
+                            insertbox_count = pdf_page_fig.insert_textbox(rect = (pdf_pos[0]-margin_textbox, pdf_pos[1]-margin_textbox, pdf_pos[2]+margin_textbox, 3*pdf_pos[3]-pdf_pos[1]), buffer = text_block, fontname = font_name,fontfile = font_file_path ,fontsize = fontsize_block-0.6, color=[0, 0, 0], lineheight = 1.23)    
                     if insertbox_count < 0:
                         self.insertbox_count += 1
 
@@ -499,6 +509,9 @@ class TranslateApi:
 
 
     def __translate_llm(self, text: str, temper, seed, top_p) -> str:
+        self.model_select = 5
+
+        # return text, 1  # No translate
         from openai import OpenAI
 
         # client = OpenAI(
@@ -513,24 +526,6 @@ class TranslateApi:
         # )
         # model_name = "yi-medium"
 
-        # client = OpenAI(
-        #     api_key = "ollama",
-        #     base_url = "http://localhost:11434/v1/"
-        # )
-
-        # if self.model_select == 0:
-        #     model_name = "ali-qwen-8b:latest"
-        # if self.model_select == 1:
-        #     model_name = "dol-qwen-8b:latest"
-        # elif self.model_select == 2:
-        #     model_name = "secstate-gemma2:latest"
-        # elif self.model_select == 3:
-        #     model_name = "hfl_llama3_chinese_ins_v3:latest"
-        # elif self.model_select == 4:
-        #     model_name = "qwen2:7b" # 4bit
-
-        self.model_select = 5
-        
         client = OpenAI(
             api_key = "lm-studio",
             base_url = "http://localhost:1234/v1/"
@@ -550,15 +545,12 @@ class TranslateApi:
         elif self.model_select == 6:
             model_name = "lmstudio-community/gemma-2-9b-it-Q6_K"
         # # 5 
-# 你的任务是将下列文本或单词翻译成中文，对于人名、专有名词、数字、数学符号、和标点符号要保留原文中的格式不要翻译。对于下列英文文本中的数学公式、和数学符号，中文翻译结果保留原始英文中数学格式并且不要翻译为latex或者markdown数学格式。请翻译下面的文本或单词，直接显示输出翻译的结果。不要输出任何提示，注意，和警告信息。对于下列英文文本中除了英文字符之外的符号，翻译结果保留原样输出并且不要更改为latex或者markdown数学格式，翻译结果不要包含反斜杠\和$的latex数学公式 ，输出的翻译结果不要输出多余的解释，请直接根据输入文本输出翻译的结果，不要输出其他额外的解释，注解，提示，注意，和警告信息  $$ 和 \\ 
 
         system_prompt = """
 请将英文翻译成中文，保持英文原文中人名，专有名词，数学字符符号和公式的格式保持原始不变，不要将数学符号和公式转换成 LaTeX 公式形式。请直接将英文翻译成中文，只输出翻译结果，不要输出其他的注释note、注意Note、提示tips 和解释explanation，直接输出翻译后的中文结果。
     """
 # Translate into Chinese, don't output notation, attention, tips, warning. keeping the format of mathematical symbols and equations as they are in the original english text. don't convert mathematical symbols and equations into math Latex $$ formulas. Translate english into Chinese directly. only output english translation results, and don't output other notation, attention, tips, warning, interpret. output english translation results
 
-# 翻译结果保留原来排版格式，不要添加换行，空格等
-# Your task is to translate the following text or words into Chinese, keeping the format of proper names, specialized terms, numbers, mathematical symbols, and punctuation unchanged. For mathematical formulas and symbols in the following English text, the translation result should preserve the original English mathematical format without translating them into slash-wrapped LaTeX or Markdown mathematical formats. Please translate the text or words below and display the translation results directly. Do not output any prompts, notes, or warnings. For mathematical formulas or symbols in the following English text, the translation result should preserve the original English mathematical format and should not be translated into backslash-wrapped LaTeX or Markdown mathematical formats. Do not add backslashes.
         response = client.chat.completions.create(
         model=model_name,
         messages=[
@@ -597,7 +589,7 @@ if __name__ == "__main__":
     translate_api = TranslateApi()
     # translate_api.run()
     # 定义输出目录
-    out_name_prefix = 'o_dolqwen_cn_'
+    
     data_directory ='C:\\Users\\18420\\Desktop\\AIpaper\\translate\\' #data/  weekly_paper
 
     out_directory = data_directory+ 'out'
