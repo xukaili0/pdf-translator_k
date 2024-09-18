@@ -51,7 +51,8 @@ model_paths = {
     "YOLOv8x_full Model": "best.pt",
 }
 
-yolomodel = YOLO(model_paths["YOLOv8x_full Model"])
+# yolomodel = YOLO(model_paths["YOLOv8x Model"])
+yolomodel = YOLO("yolov10x_best.pt")  # YOLOV10
 
 # font_bold_name = 'Heavy'
 # font_bold_file_path ="./font/SourceHanSerifCN-Heavy.ttf" 
@@ -342,8 +343,11 @@ class TranslateApi:
         img_np = np.array(image, dtype=np.uint8)
         # original_img_np = copy.deepcopy(img_np)
         # result = self.layout_model(cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR))
-        imgsize = 35
-        results = yolomodel(source=img_np, save=False, show_labels=True, show_conf=True, show_boxes=True,agnostic_nms = True, iou = 0.2, imgsz = imgsize*32)#iou = 0 ,   iou = 0.7  ,,imgsz = imgsize*32
+        imgsize = imagesize
+        print('&&&&& imagesize', imgsize)
+
+        # results = yolomodel(source=img_np, save=False, show_labels=True, show_conf=True, show_boxes=True,agnostic_nms = True, iou = 0.2 )#iou = 0 ,  imgsz = int(imgsize*32) iou = 0.7 
+        results = yolomodel.predict(source=image, conf=0.2, iou=0.8, nms = True) #imgsz = int(imgsize*32)
 
         # from paddleocr import PaddleOCR
         # ocr = PaddleOCR(use_angle_cls=True, lang="en",det_db_box_thresh	= 0.1,use_dilation = True, det_db_score_mode='slow',det_db_unclip_ratio=1.8 ,det_limit_side_len=1600
@@ -511,7 +515,7 @@ class TranslateApi:
     def __translate_llm(self, text: str, temper, seed, top_p) -> str:
         self.model_select = 5
 
-        # return text, 1  # No translate
+        return text, 1  # No translate
         from openai import OpenAI
 
         # client = OpenAI(
@@ -589,20 +593,21 @@ if __name__ == "__main__":
     translate_api = TranslateApi()
     # translate_api.run()
     # 定义输出目录
-    
-    data_directory ='C:\\Users\\18420\\Desktop\\AIpaper\\translate\\' #data/  weekly_paper
+    imagesizes = [32]   #10,15,20,25,30,35, 45,50  17.5, 22.5, 27.5, 32.5, 37.5
+    for imagesize in imagesizes:
+        data_directory ='C:\\Users\\18420\\Desktop\\AIpaper\\translate\\' #data/  weekly_paper
 
-    out_directory = data_directory+ 'out'
-    print(out_directory)
-    if not os.path.exists(out_directory):
-        os.makedirs(out_directory)
+        out_directory = data_directory+ 'layout_YOLOV_10x_imgsz_32\\DPI_'+str(DPI)
+        print(out_directory)
+        if not os.path.exists(out_directory):
+            os.makedirs(out_directory)
 
-    for filename in os.listdir(data_directory):
-        if filename.endswith('.pdf'):
-            # 提取PDF文件名
-            pdf_name = os.path.splitext(filename)[0]
-            print(f"PDF name:  {pdf_name}")
-            translate_api._translate_pdf(pdf_name, data_directory, out_directory,all_pages=1, specific_pages_list_1 = [9])            
+        for filename in os.listdir(data_directory):
+            if filename.endswith('.pdf'):
+                # 提取PDF文件名
+                pdf_name = os.path.splitext(filename)[0]
+                print(f"PDF name:  {pdf_name}")
+                translate_api._translate_pdf(pdf_name, data_directory, out_directory,all_pages=1, specific_pages_list_1 = [9])            
 
-    # 调用_translate_pdf函数，传入PDF文件路径
+        # 调用_translate_pdf函数，传入PDF文件路径
     
