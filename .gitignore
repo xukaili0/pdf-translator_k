@@ -2,8 +2,8 @@
 *.pyc
 __pycache__
 
-*.pdf
+
 
 *.otf
-*.ttf
+
 *.pth

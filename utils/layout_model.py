@@ -9,7 +9,7 @@ from detectron2.config import get_cfg
 from detectron2.engine import DefaultPredictor
 
 sys.path.append("/unilm")
-from dit.object_detection.ditod import add_vit_config
+from unilm.dit.object_detection.ditod import add_vit_config
 
 
 @dataclass
